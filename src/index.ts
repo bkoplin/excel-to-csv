@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx'
 import yoctoSpinner from 'yocto-spinner'
 import Papa from 'papaparse'
 import type { JsonObject, JsonPrimitive } from 'type-fest'
-import { map, merge } from 'lodash-es'
+import { map, merge, times } from 'lodash-es'
 
 const spinner = yoctoSpinner({ text: 'Parsing…' })
 XLSX.set_fs(fs)
@@ -24,7 +24,7 @@ export async function parseWorksheet(args: Arguments): Promise<void> {
   if (typeof filePath !== 'string')
     return
   const parsedFile = parse(filePath)
-  const workbook = XLSX.readFile(filePath, { raw: true, cellDates: true })
+  const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true })
   const worksheets = workbook.SheetNames
   if (typeof sheetName === 'string') {
     if (worksheets.includes(sheetName)) {
@@ -38,14 +38,32 @@ export async function parseWorksheet(args: Arguments): Promise<void> {
     processWorksheet(workbook, worksheets[0], range, parsedFile, filePath)
   }
 }
-function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, range: string | undefined, parsedFile: ParsedPath, filePath: string): void {
+function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string): void {
   const rawSheet = workbook.Sheets[sheetName]
-  const worksheet = XLSX.utils.sheet_to_json(rawSheet, { range, raw: true, UTC: true, header: 1 }) as Array<JsonPrimitive>[]
-  const [fields, ...data] = map(worksheet, (row, i) => {
-    if (i === 0)
-      return [...row, 'source_file', 'source_range']
-    else return [...row, parsedFile.base, range || workbook.Sheets[sheetName]['!ref']]
+  const range = inputRange || rawSheet['!ref']
+  const decodedRange = XLSX.utils.decode_range(range)
+  let fields = []
+  const data = []
+  times(decodedRange.e.r - decodedRange.s.r, (i) => {
+    const rowIdx = i + decodedRange.s.r
+    const rowdata = rawSheet['!data']?.[rowIdx].slice(decodedRange.s.c, decodedRange.e.c + 1).map(cell => cell.v)
+    if (i === 0) {
+      fields = rowdata
+      fields[decodedRange.e.c + 1] = 'source_file'
+      fields[decodedRange.e.c + 2] = 'source_range'
+    }
+    else {
+      rowdata[decodedRange.e.c + 1] = parsedFile.base
+      rowdata[decodedRange.e.c + 2] = range
+      data.push(rowdata)
+    }
   })
+  // const worksheet = XLSX.utils.sheet_to_json(rawSheet, { range, raw: true, UTC: true, header: 1 }) as Array<JsonPrimitive>[]
+  // const [fields, ...data] = map(worksheet, (row, i) => {
+  //   if (i === 0)
+  //     return [...row, 'source_file', 'source_range']
+  //   else return [...row, parsedFile.base, range || workbook.Sheets[sheetName]['!ref']]
+  // })
   const csv = Papa.unparse({ fields, data })
   fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}.csv`, csv, {
     encoding: 'utf-8',
