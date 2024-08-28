@@ -39,7 +39,7 @@
   "scripts": {
     "dev": "esno ./src/cli.ts",
     "clean": "rimraf ./dist/ ./exec/",
-    "bundle": "unbuild && pkg . --out-dir ./exec/",
+    "bundle": "unbuild && nexe --input ./dist/cli.cjs",
     "build": "unbuild",
     "lint": "eslint .",
     "prepublishOnly": "nr build",
@@ -71,8 +71,8 @@
     "eslint": "^9.7.0",
     "esno": "^4.7.0",
     "lint-staged": "^15.2.7",
+    "nexe": "4.0.0-rc.6",
     "picocolors": "^1.0.1",
-    "pkg": "^5.8.1",
     "pnpm": "^9.5.0",
     "rimraf": "^6.0.1",
     "simple-git-hooks": "^2.11.1",
