@@ -7,17 +7,22 @@ import { stringify } from 'yaml'
 import * as XLSX from 'xlsx'
 import yoctoSpinner from 'yocto-spinner'
 import Papa from 'papaparse'
+import type { JsonObject } from 'type-fest'
+import { map, merge } from 'lodash-es'
 
 const spinner = yoctoSpinner({ text: 'Parsing…' })
 XLSX.set_fs(fs)
 export interface Arguments {
-  filePath: string
+  filePath?: string
   sheetName?: string
   range?: string
 }
 
-export async function parseWorksheet({ filePath, sheetName, range }: Arguments): void {
+export async function parseWorksheet(args: Arguments): Promise<void> {
+  const { filePath, sheetName, range } = args
   spinner.start()
+  if (typeof filePath !== 'string')
+    return
   const parsedFile = parse(filePath)
   const workbook = XLSX.readFile(filePath, { raw: true, cellDates: true })
   const worksheets = workbook.SheetNames
@@ -36,7 +41,7 @@ export async function parseWorksheet({ filePath, sheetName, range }: Arguments):
 function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, range: string | undefined, parsedFile: ParsedPath, filePath: string): void {
   const rawSheet = workbook.Sheets[sheetName]
   const worksheet = XLSX.utils.sheet_to_json(rawSheet, { range, raw: true, UTC: true })
-  const data = worksheet.map(row => ({ ...row, source: parsedFile.base, range: range || workbook.Sheets[sheetName]['!ref'] }))
+  const data = map(worksheet, (row: object) => merge(row, { source: parsedFile.base, range: range || workbook.Sheets[sheetName]['!ref'] }))
   const csv = Papa.unparse(data)
   fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}.csv`, csv, (err) => {
     if (err)
