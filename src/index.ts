@@ -4,12 +4,11 @@ import type { ParsedPath } from 'node:path/posix'
 import * as Commander from '@commander-js/extra-typings'
 import colors from 'picocolors'
 import * as XLSX from 'xlsx'
-import yoctoSpinner from 'yocto-spinner'
 import Papa from 'papaparse'
 import { times } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
+import type { Spinner } from 'yocto-spinner'
 
-const spinner = yoctoSpinner({ text: 'Parsing…' })
 XLSX.set_fs(fs)
 export interface Arguments {
   filePath?: string
@@ -21,27 +20,29 @@ export async function parseWorksheet(args: {
   filePath?: string
   sheetName?: string
   range?: string
-}): Promise<void> {
+}, spinner: Spinner): Promise<void> {
   const { filePath, sheetName, range } = args
   spinner.start()
   if (typeof filePath !== 'string')
     return
   const parsedFile = parse(filePath)
-  const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true })
-  const worksheets = workbook.SheetNames
   if (typeof sheetName === 'string') {
+    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
+    const worksheets = workbook.SheetNames
     if (worksheets.includes(sheetName)) {
-      processWorksheet(workbook, sheetName, range, parsedFile, filePath)
+      processWorksheet(workbook, sheetName, range, parsedFile, filePath, spinner)
     }
     else {
       throw new Commander.InvalidArgumentError(`The worksheet ${colors.bold(colors.cyan(`"${sheetName}"`))} does not exist in the Excel at ${colors.yellow(`"${filePath}"`)}`)
     }
   }
   else {
-    processWorksheet(workbook, worksheets[0], range, parsedFile, filePath)
+    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
+    const worksheets = workbook.SheetNames
+    processWorksheet(workbook, worksheets[0], range, parsedFile, filePath, spinner)
   }
 }
-function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string): void {
+function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string, spinner: Spinner): void {
   const rawSheet = workbook.Sheets[sheetName]
   const range = (inputRange || rawSheet['!ref']) as string
   const decodedRange = XLSX.utils.decode_range(range)
@@ -53,11 +54,13 @@ function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange
     if (i === 0) {
       fields = rowdata as string[]
       fields[decodedRange.e.c + 1] = 'source_file'
-      fields[decodedRange.e.c + 2] = 'source_range'
+      fields[decodedRange.e.c + 2] = 'source_sheet'
+      fields[decodedRange.e.c + 3] = 'source_range'
     }
     else {
       rowdata[decodedRange.e.c + 1] = parsedFile.base
-      rowdata[decodedRange.e.c + 2] = range
+      rowdata[decodedRange.e.c + 2] = sheetName
+      rowdata[decodedRange.e.c + 3] = range
       data.push(rowdata)
     }
   })

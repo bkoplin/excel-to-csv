@@ -9,3 +9,7 @@ lib-cov
 logs
 node_modules
 temp
+configure
+./cli
+cli
+excel-to-csv
