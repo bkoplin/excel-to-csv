@@ -4,12 +4,11 @@ import type { ParsedPath } from 'node:path/posix'
 import * as Commander from '@commander-js/extra-typings'
 import colors from 'picocolors'
 import * as XLSX from 'xlsx'
-import yoctoSpinner from 'yocto-spinner'
 import Papa from 'papaparse'
 import { times } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
+import type { Spinner } from 'yocto-spinner'
 
-const spinner = yoctoSpinner({ text: 'Parsing…' })
 XLSX.set_fs(fs)
 export interface Arguments {
   filePath?: string
@@ -21,7 +20,7 @@ export async function parseWorksheet(args: {
   filePath?: string
   sheetName?: string
   range?: string
-}): Promise<void> {
+}, spinner: Spinner): Promise<void> {
   const { filePath, sheetName, range } = args
   spinner.start()
   if (typeof filePath !== 'string')
@@ -31,17 +30,17 @@ export async function parseWorksheet(args: {
   const worksheets = workbook.SheetNames
   if (typeof sheetName === 'string') {
     if (worksheets.includes(sheetName)) {
-      processWorksheet(workbook, sheetName, range, parsedFile, filePath)
+      processWorksheet(workbook, sheetName, range, parsedFile, filePath, spinner)
     }
     else {
       throw new Commander.InvalidArgumentError(`The worksheet ${colors.bold(colors.cyan(`"${sheetName}"`))} does not exist in the Excel at ${colors.yellow(`"${filePath}"`)}`)
     }
   }
   else {
-    processWorksheet(workbook, worksheets[0], range, parsedFile, filePath)
+    processWorksheet(workbook, worksheets[0], range, parsedFile, filePath, spinner)
   }
 }
-function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string): void {
+function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string, spinner: Spinner): void {
   const rawSheet = workbook.Sheets[sheetName]
   const range = (inputRange || rawSheet['!ref']) as string
   const decodedRange = XLSX.utils.decode_range(range)
