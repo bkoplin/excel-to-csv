@@ -39,7 +39,7 @@
   "scripts": {
     "dev": "esno ./src/cli.ts",
     "clean": "rimraf ./dist/ ./exec/",
-    "bundle": "unbuild && nexe --input ./dist/cli.cjs --build --python=\"$(which python3)\"",
+    "bundle": "unbuild && nexe --input ./dist/cli.mjs --output=\"excel-to-csv\" --build --python=\"$(which python3)\" --verbose --configure=--fully-static --make=-j9",
     "build": "unbuild",
     "lint": "eslint .",
     "prepublishOnly": "nr build",
@@ -52,6 +52,7 @@
     "@antfu/utils": "^0.7.10",
     "@commander-js/extra-typings": "^12.1.0",
     "@types/lodash-es": "^4.17.12",
+    "inquirer": "^10.1.8",
     "lodash-es": "^4.17.21",
     "magic-regexp": "^0.8.0",
     "papaparse": "^5.4.1",

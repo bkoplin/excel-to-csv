@@ -10,5 +10,6 @@ export default defineBuildConfig({
   failOnWarn: false,
   rollup: {
     emitCJS: true,
+    cjsBridge: true,
   },
 })

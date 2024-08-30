@@ -26,9 +26,9 @@ export async function parseWorksheet(args: {
   if (typeof filePath !== 'string')
     return
   const parsedFile = parse(filePath)
-  const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true })
-  const worksheets = workbook.SheetNames
   if (typeof sheetName === 'string') {
+    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
+    const worksheets = workbook.SheetNames
     if (worksheets.includes(sheetName)) {
       processWorksheet(workbook, sheetName, range, parsedFile, filePath, spinner)
     }
@@ -37,6 +37,8 @@ export async function parseWorksheet(args: {
     }
   }
   else {
+    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
+    const worksheets = workbook.SheetNames
     processWorksheet(workbook, worksheets[0], range, parsedFile, filePath, spinner)
   }
 }
@@ -52,11 +54,13 @@ function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange
     if (i === 0) {
       fields = rowdata as string[]
       fields[decodedRange.e.c + 1] = 'source_file'
-      fields[decodedRange.e.c + 2] = 'source_range'
+      fields[decodedRange.e.c + 2] = 'source_sheet'
+      fields[decodedRange.e.c + 3] = 'source_range'
     }
     else {
       rowdata[decodedRange.e.c + 1] = parsedFile.base
-      rowdata[decodedRange.e.c + 2] = range
+      rowdata[decodedRange.e.c + 2] = sheetName
+      rowdata[decodedRange.e.c + 3] = range
       data.push(rowdata)
     }
   })
