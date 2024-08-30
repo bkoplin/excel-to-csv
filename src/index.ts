@@ -1,14 +1,13 @@
 import * as fs from 'node:fs'
-import { dirname, parse } from 'node:path'
+import { parse } from 'node:path'
 import type { ParsedPath } from 'node:path/posix'
 import * as Commander from '@commander-js/extra-typings'
 import colors from 'picocolors'
-import { stringify } from 'yaml'
 import * as XLSX from 'xlsx'
 import yoctoSpinner from 'yocto-spinner'
 import Papa from 'papaparse'
-import type { JsonObject, JsonPrimitive } from 'type-fest'
-import { map, merge, times } from 'lodash-es'
+import { times } from 'lodash-es'
+import type { JsonValue } from 'type-fest'
 
 const spinner = yoctoSpinner({ text: 'Parsing…' })
 XLSX.set_fs(fs)
@@ -18,7 +17,11 @@ export interface Arguments {
   range?: string
 }
 
-export async function parseWorksheet(args: Arguments): Promise<void> {
+export async function parseWorksheet(args: {
+  filePath?: string
+  sheetName?: string
+  range?: string
+}): Promise<void> {
   const { filePath, sheetName, range } = args
   spinner.start()
   if (typeof filePath !== 'string')
@@ -40,15 +43,15 @@ export async function parseWorksheet(args: Arguments): Promise<void> {
 }
 function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string): void {
   const rawSheet = workbook.Sheets[sheetName]
-  const range = inputRange || rawSheet['!ref']
+  const range = (inputRange || rawSheet['!ref']) as string
   const decodedRange = XLSX.utils.decode_range(range)
-  let fields = []
-  const data = []
+  let fields: string[] = []
+  const data: JsonValue[] = []
   times(decodedRange.e.r - decodedRange.s.r, (i) => {
     const rowIdx = i + decodedRange.s.r
-    const rowdata = rawSheet['!data']?.[rowIdx].slice(decodedRange.s.c, decodedRange.e.c + 1).map(cell => cell.v)
+    const rowdata = rawSheet['!data']?.[rowIdx].slice(decodedRange.s.c, decodedRange.e.c + 1).map(cell => cell.v) as JsonValue[]
     if (i === 0) {
-      fields = rowdata
+      fields = rowdata as string[]
       fields[decodedRange.e.c + 1] = 'source_file'
       fields[decodedRange.e.c + 2] = 'source_range'
     }

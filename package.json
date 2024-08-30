@@ -39,7 +39,7 @@
   "scripts": {
     "dev": "esno ./src/cli.ts",
     "clean": "rimraf ./dist/ ./exec/",
-    "bundle": "unbuild && nexe --input ./dist/cli.cjs",
+    "bundle": "unbuild && nexe --input ./dist/cli.cjs --build --python=\"/Library/Frameworks/Python.framework/Versions/3.12/bin/python3\"",
     "build": "unbuild",
     "lint": "eslint .",
     "prepublishOnly": "nr build",

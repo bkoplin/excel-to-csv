@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import process from 'node:process'
 import * as Commander from '@commander-js/extra-typings'
 import colors from 'picocolors'
 import { parseWorksheet } from './index'
@@ -13,4 +14,5 @@ const program = new Commander.Command()
   .option('-s, --sheet-name <STRING>', 'name of source worksheet')
   .option('-r, --range <STRING>', 'range of worksheet to parse')
   .action(args => parseWorksheet(args))
-  .parse(process.argv)
+
+program.parse(process.argv)
