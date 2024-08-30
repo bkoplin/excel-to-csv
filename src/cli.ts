@@ -33,12 +33,18 @@ const program = new Commander.Command()
   .action(async (args) => {
     if (!args.filePath) {
       const sourceFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 })
-      const dirName = await select({ name: 'dirName', message: 'Select the folder containing the Excel file you want to parse', choices: [...sourceFolders, ...['Desktop', 'Downloads', 'Documents'].map(v => resolve(v))].map(folder => ({ name: basename(folder), value: folder })) })
+      const dirName = await select({
+        name: 'dirName',
+        message: 'Select the folder containing the Excel file you want to parse',
+        pageSize: 20,
+        choices: [...['Desktop', 'Downloads', 'Documents'].map(v => resolve(v)), ...sourceFolders].map(folder => ({ name: basename(folder), value: folder })),
+      })
       const filePath = await inquirerFileSelector({
         message: 'Where do you want to start looking for your Excel file?',
         basePath: dirName,
         hideNonMatch: true,
         allowCancel: true,
+        pageSize: 20,
         match(filePath) {
           const isValidFilePath = !filePath.path.split(sep).some(v => v.startsWith('.'))
           // console.log({ filePath, isValidFilePath })
