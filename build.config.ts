@@ -9,6 +9,12 @@ export default defineBuildConfig({
   clean: true,
   failOnWarn: false,
   rollup: {
+    dts: {
+      compilerOptions: {
+        noEmitOnError: false,
+      },
+    },
     emitCJS: true,
+    cjsBridge: true,
   },
 })
