@@ -51,8 +51,10 @@
   "dependencies": {
     "@antfu/utils": "^0.7.10",
     "@commander-js/extra-typings": "^12.1.0",
+    "@inquirer/prompts": "^5.3.8",
     "@types/lodash-es": "^4.17.12",
-    "inquirer": "^10.1.8",
+    "fast-glob": "^3.3.2",
+    "inquirer-file-selector": "^0.4.0",
     "lodash-es": "^4.17.21",
     "magic-regexp": "^0.8.0",
     "papaparse": "^5.4.1",
