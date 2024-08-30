@@ -49,11 +49,13 @@
     "prepare": "simple-git-hooks"
   },
   "dependencies": {
+    "@antfu/utils": "^0.7.10",
     "@commander-js/extra-typings": "^12.1.0",
     "@types/lodash-es": "^4.17.12",
     "lodash-es": "^4.17.21",
     "magic-regexp": "^0.8.0",
     "papaparse": "^5.4.1",
+    "picocolors": "^1.0.1",
     "type-fest": "^4.25.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.5.0",
@@ -62,7 +64,6 @@
   "devDependencies": {
     "@antfu/eslint-config": "^2.23.0",
     "@antfu/ni": "^0.22.0",
-    "@antfu/utils": "^0.7.10",
     "@types/node": "^20.14.11",
     "@types/papaparse": "^5.3.14",
     "@vitest/ui": "^2.0.5",
@@ -72,9 +73,7 @@
     "esno": "^4.7.0",
     "lint-staged": "^15.2.7",
     "nexe": "4.0.0-rc.6",
-    "picocolors": "^1.0.1",
     "pnpm": "^9.5.0",
-    "rimraf": "^6.0.1",
     "simple-git-hooks": "^2.11.1",
     "typescript": "^5.5.3",
     "unbuild": "^2.0.0",
