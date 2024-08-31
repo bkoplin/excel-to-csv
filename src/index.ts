@@ -5,9 +5,11 @@ import * as Commander from '@commander-js/extra-typings'
 import colors from 'picocolors'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { times } from 'lodash-es'
+import { range } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
 import type { Spinner } from 'yocto-spinner'
+import dayjs from 'dayjs'
+import { isUndefined } from '@antfu/utils'
 
 XLSX.set_fs(fs)
 export interface Arguments {
@@ -17,61 +19,64 @@ export interface Arguments {
 }
 
 export async function parseWorksheet(args: {
-  filePath?: string
-  sheetName?: string
-  range?: string
+  filePath: string
+  sheetName: string
+  range: string
 }, spinner: Spinner): Promise<void> {
-  const { filePath, sheetName, range } = args
+  const { filePath, sheetName, range: inputRange } = args
   spinner.start()
-  if (typeof filePath !== 'string')
-    return
   const parsedFile = parse(filePath)
-  if (typeof sheetName === 'string') {
-    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
-    const worksheets = workbook.SheetNames
-    if (worksheets.includes(sheetName)) {
-      processWorksheet(workbook, sheetName, range, parsedFile, filePath, spinner)
-    }
-    else {
-      throw new Commander.InvalidArgumentError(`The worksheet ${colors.bold(colors.cyan(`"${sheetName}"`))} does not exist in the Excel at ${colors.yellow(`"${filePath}"`)}`)
-    }
-  }
-  else {
-    const workbook = XLSX.readFile(filePath, { raw: false, cellDates: true, dense: true, sheet: sheetName })
-    const worksheets = workbook.SheetNames
-    processWorksheet(workbook, worksheets[0], range, parsedFile, filePath, spinner)
-  }
+  const workbook = XLSX.readFile(filePath, { raw: true, cellDates: true, dense: true, sheet: sheetName })
+  const parsingConfig: FileParserOptions = { workbook, sheetName, inputRange, parsedFile, filePath, spinner }
+  processWorksheet(parsingConfig)
 }
-function processWorksheet(workbook: XLSX.WorkBook, sheetName: string, inputRange: string | undefined, parsedFile: ParsedPath, filePath: string, spinner: Spinner): void {
-  const rawSheet = workbook.Sheets[sheetName]
-  const range = (inputRange || rawSheet['!ref']) as string
-  const decodedRange = XLSX.utils.decode_range(range)
-  let fields: string[] = []
-  const data: JsonValue[] = []
-  times(decodedRange.e.r - decodedRange.s.r, (i) => {
-    const rowIdx = i + decodedRange.s.r
-    const rowdata = rawSheet['!data']?.[rowIdx].slice(decodedRange.s.c, decodedRange.e.c + 1).map(cell => cell.v) as JsonValue[]
-    if (i === 0) {
-      fields = rowdata as string[]
-      fields[decodedRange.e.c + 1] = 'source_file'
-      fields[decodedRange.e.c + 2] = 'source_sheet'
-      fields[decodedRange.e.c + 3] = 'source_range'
+interface FileParserOptions {
+  workbook?: XLSX.WorkBook
+  sheetName: string
+  inputRange: string
+  parsedFile: ParsedPath
+  filePath: string
+  spinner: Spinner
+}
+
+function processWorksheet({ workbook, sheetName, inputRange, parsedFile, filePath, spinner }: FileParserOptions): void {
+  const rawSheet = workbook!.Sheets[sheetName]
+  const decodedRange = XLSX.utils.decode_range(inputRange)
+  const dataForCSV: Papa.UnparseObject<JsonValue> = { fields: [], data: [] }
+  /* let fields: string[] = []
+     const data: JsonValue[] = [] */
+  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
+  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
+  rowIndices.forEach((rowIdx) => {
+    if (rowIdx === decodedRange.s.r) {
+      columnIndices.forEach((colIdx) => {
+        const currentCell = rawSheet['!data'][rowIdx][colIdx]
+        if (isUndefined(currentCell)) {
+          dataForCSV.fields.push(null)
+        }
+        else {
+          dataForCSV.fields.push(currentCell.v as string)
+        }
+      })
+      dataForCSV.fields.push('source_file', 'source_sheet', 'source_range')
     }
     else {
-      rowdata[decodedRange.e.c + 1] = parsedFile.base
-      rowdata[decodedRange.e.c + 2] = sheetName
-      rowdata[decodedRange.e.c + 3] = range
-      data.push(rowdata)
+      const rowdata: JsonValue[] = []
+      columnIndices.forEach((colIdx) => {
+        const currentCell = rawSheet['!data'][rowIdx][colIdx]
+        if (isUndefined(currentCell)) {
+          rowdata.push(null)
+        }
+        else {
+          rowdata.push(currentCell.v as string)
+        }
+      })
+      rowdata.push(parsedFile.base, sheetName, inputRange)
+      dataForCSV.data.push(rowdata)
     }
   })
-  // const worksheet = XLSX.utils.sheet_to_json(rawSheet, { range, raw: true, UTC: true, header: 1 }) as Array<JsonPrimitive>[]
-  // const [fields, ...data] = map(worksheet, (row, i) => {
-  //   if (i === 0)
-  //     return [...row, 'source_file', 'source_range']
-  //   else return [...row, parsedFile.base, range || workbook.Sheets[sheetName]['!ref']]
-  // })
-  const csv = Papa.unparse({ fields, data })
-  fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}.csv`, csv, {
+  const csv = Papa.unparse(dataForCSV)
+  fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}.csv`, csv, {
     encoding: 'utf-8',
   }, (err) => {
     if (err)
