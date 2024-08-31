@@ -9,7 +9,10 @@ import * as XLSX from 'xlsx'
 import { input, select } from '@inquirer/prompts'
 import inquirerFileSelector from 'inquirer-file-selector'
 
+import { Separator } from '@inquirer/core'
+
 import { isUndefined } from '@antfu/utils'
+import { findIndex } from 'lodash-es'
 import { parseWorksheet } from './index'
 
 XLSX.set_fs(fs)
@@ -35,6 +38,11 @@ const program = new Commander.Command()
     if (isUndefined(args.filePath)) {
       const choices = fg.sync(['Library/CloudStorage/**', 'Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).sort()
         .map(folder => ({ name: basename(folder), value: folder }))
+      const cloudStorageIndex = findIndex(choices, ({ value }) => value.includes('CloudStorage'))
+      if (cloudStorageIndex !== -1) {
+        choices.splice(cloudStorageIndex, 0, new Separator('---'))
+        choices.push(new Separator('---'))
+      }
       const dirName = await select({
         name: 'dirName',
         message: 'Select the folder containing the Excel file you want to parse',
@@ -56,12 +64,16 @@ const program = new Commander.Command()
 
       args.filePath = filePath
     }
+    spinner.start('Processing...')
+    spinner.info(`Checking for worksheets in ${args.filePath}`)
     const { SheetNames } = XLSX.readFile(args.filePath, { bookSheets: true })
     if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
       const answer = await select<string>({ name: 'sheetName', message: 'Select the worksheet to parse', choices: SheetNames.map(value => ({ name: value, value })) })
       args.sheetName = answer
     }
     if (isUndefined(args.range)) {
+      spinner.start('Processing...')
+      spinner.info(`Checking for ranges in worksheet ${args.sheetName}`)
       const wb = XLSX.readFile(args.filePath, { sheet: args.sheetName })
       const answer = await input<string>({ name: 'range', message: 'Enter the range of the worksheet to parse', default: wb.Sheets[args.sheetName]['!ref'] })
       args.range = answer
