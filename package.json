@@ -39,7 +39,7 @@
   "scripts": {
     "dev": "esno ./src/cli.ts",
     "clean": "rimraf ./dist/ ./exec/",
-    "bundle": "unbuild && nexe --input ./dist/cli.mjs --output=\"excel-to-csv\" --build --python=\"$(which python3)\" --verbose --configure=--fully-static --make=-j9",
+    "bundle": "unbuild && nexe --input ./dist/cli.mjs --output=\"excel-to-csv\" --build --python=\"$(which python3)\" --build --verbose --make=-j9",
     "build": "unbuild",
     "lint": "eslint . --fix",
     "prepublishOnly": "nr build",
@@ -51,6 +51,7 @@
   "dependencies": {
     "@antfu/utils": "^0.7.10",
     "@commander-js/extra-typings": "^12.1.0",
+    "@inquirer/core": "^9.0.10",
     "@inquirer/prompts": "^5.3.8",
     "@types/lodash-es": "^4.17.12",
     "dayjs": "^1.11.13",
@@ -68,6 +69,7 @@
   "devDependencies": {
     "@antfu/eslint-config": "^3.0.0",
     "@antfu/ni": "^0.23.0",
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.16.2",
     "@types/papaparse": "^5.3.14",
     "@vitest/ui": "^2.0.5",
@@ -75,8 +77,10 @@
     "changelogithub": "^0.13.10",
     "eslint": "^9.9.1",
     "esno": "^4.7.0",
+    "fs-extra": "^11.2.0",
     "lint-staged": "^15.2.9",
     "nexe": "4.0.0-rc.6",
+    "pkg": "^5.8.1",
     "pnpm": "^9.9.0",
     "simple-git-hooks": "^2.11.1",
     "typescript": "^5.5.4",
