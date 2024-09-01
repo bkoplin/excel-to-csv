@@ -43,7 +43,7 @@
     "build": "unbuild",
     "lint": "eslint . --fix",
     "prepublishOnly": "nr build",
-    "release": "op run -- pnpm bumpp && changelogithub",
+    "release": "op run --env-file=\"./.env\" -- pnpm bumpp && changelogithub",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "prepare": "simple-git-hooks"
