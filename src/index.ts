@@ -42,9 +42,6 @@ export async function parseWorksheet(args: {
       const tempCSVSize = await number({ message: 'Size of output CSV files (in Mb):', default: csvSizeInMegabytes, min: 1, max: csvSizeInMegabytes * 4 })
       csvSize = tempCSVSize * 1000000
     }
-    else {
-      csvSize = csvSize * 10
-    }
   }
   const rawSheet = workbook.Sheets[args.sheetName]
   const decodedRange = XLSX.utils.decode_range(args.range)
