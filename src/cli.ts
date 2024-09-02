@@ -9,10 +9,8 @@ import * as XLSX from 'xlsx'
 import { input, select } from '@inquirer/prompts'
 import inquirerFileSelector from 'inquirer-file-selector'
 import colors from 'picocolors'
-import { Separator } from '@inquirer/core'
 
 import { isUndefined } from '@antfu/utils'
-import { findIndex } from 'lodash-es'
 import { parseWorksheet } from './index'
 
 XLSX.set_fs(fs)
@@ -25,19 +23,15 @@ const program = new Commander.Command()
   .option('-s, --sheet-name <STRING>', 'name of source worksheet')
   .option('-r, --range <STRING>', 'range of worksheet to parse')
   .action(async (args) => {
-    if (isUndefined(args.filePath)) {
-      const choices = fg.sync(['Library/CloudStorage/**', 'Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).sort()
-        .map(folder => ({ name: basename(folder), value: folder }))
-      const cloudStorageIndex = findIndex(choices, ({ value }) => value.includes('CloudStorage'))
-      if (cloudStorageIndex !== -1) {
-        choices.splice(cloudStorageIndex, 0, new Separator('---'))
-        choices.push(new Separator('---'))
-      }
+    if (!args.filePath) {
+      const sourceFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 })
+
       const dirName = await select({
         name: 'dirName',
         message: 'Select the folder containing the Excel file you want to parse',
+        pageSize: 20,
+        choices: [...['Desktop', 'Downloads', 'Documents'].map(v => resolve(v)), ...sourceFolders].map(folder => ({ name: basename(folder), value: folder })),
 
-        choices,
       })
       const filePath = await inquirerFileSelector({
         message: 'Where do you want to start looking for your Excel file?',
