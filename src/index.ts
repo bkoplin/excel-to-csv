@@ -26,7 +26,7 @@ export interface Arguments {
   range?: string
 }
 export async function parseArguments(args: { filePath?: string | undefined, sheetName?: string | undefined, range?: string | undefined }): Promise<void> {
-  if (!args.filePath) {
+  if (isUndefined(args.filePath)) {
     const cloudFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'), value: folder }))
     const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder), value: folder }))
 
