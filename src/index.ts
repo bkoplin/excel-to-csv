@@ -1,35 +1,73 @@
+import * as os from 'node:os'
 import * as fs from 'node:fs'
-import { join, parse, relative } from 'node:path'
+import { basename, join, parse, relative, sep } from 'node:path'
 import { PassThrough } from 'node:stream'
+import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { ceil, padStart, range } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
-import type { Spinner } from 'yocto-spinner'
 import dayjs from 'dayjs'
 import colors from 'picocolors'
-import { confirm, number } from '@inquirer/prompts'
+import { confirm, input, number, select } from '@inquirer/prompts'
+import { Separator } from '@inquirer/core'
 import { emptyDirSync, ensureDirSync } from 'fs-extra'
-import fastGlob from 'fast-glob'
+import fg from 'fast-glob'
+import { isUndefined } from '@antfu/utils'
+import yoctoSpinner from 'yocto-spinner'
 
 XLSX.set_fs(fs)
+
+const spinner = yoctoSpinner({ text: 'Parsing…' })
+
 export interface Arguments {
   filePath?: string
   sheetName?: string
   range?: string
 }
+export async function parseArguments(args: { filePath?: string | undefined, sheetName?: string | undefined, range?: string | undefined }): Promise<void> {
+  if (!args.filePath) {
+    const cloudFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'), value: folder }))
+    const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder), value: folder }))
 
-export async function parseWorksheet(args: {
-  filePath: string
-  sheetName: string
-  range: string
-}, spinner: Spinner): Promise<void> {
-  // const { filePath, sheetName, range: inputRange } = args
-  const parsedFile = parse(args.filePath)
-  spinner.text = `Calculating size of output CSV files for ${colors.cyan(`"${parsedFile.base}"`)}...
-`
-  const workbook = XLSX.readFile(args.filePath, { raw: true, cellDates: true, dense: true, sheet: args.sheetName })
+    const dirName = await select({
+      name: 'dirName',
+      message: 'Where do you want to start looking for your Excel file?',
+      pageSize: 20,
+      choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
+    })
+    const filePath = await inquirerFileSelector({
+      message: 'Navigate to the Excel file you want to parse',
+      basePath: dirName,
+      hideNonMatch: true,
+      allowCancel: true,
+      pageSize: 20,
+      match(filePath) {
+        const isValidFilePath = !filePath.path.split(sep).some(v => v.startsWith('.'))
+
+        return isValidFilePath && (filePath.isDir || /\.xlsx?$/.test(filePath.name))
+      },
+    })
+    args.filePath = filePath
+  }
+  spinner.text = `Parsing ${colors.cyan(`"${args.filePath}"`)}...\n`
+
+  const { SheetNames, Sheets } = XLSX.readFile(args.filePath, { raw: true, cellDates: true, dense: true })
   let csvSize = fs.statSync(args.filePath).size
+  if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
+    const answer = await select({ name: 'sheetName', message: 'Select the worksheet to parse', choices: SheetNames.map(value => ({ name: value, value })) })
+    args.sheetName = answer
+  }
+  if (isUndefined(args.range)) {
+    const answer = await input({ name: 'range', message: 'Enter the range of the worksheet to parse', default: Sheets[args.sheetName]['!ref'] })
+    args.range = answer
+  }
+  const parsedFile = parse(args.filePath)
+  const rawSheet = Sheets[args.sheetName]
+  const decodedRange = XLSX.utils.decode_range(args.range)
+
+  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
+  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
   let splitWorksheet = false
   let outputFilePath = `${parsedFile.dir}/${parsedFile.name}_${args.sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`
   const csvSizeInMegabytes = ceil(csvSize / 1000000, 2)
@@ -43,16 +81,11 @@ export async function parseWorksheet(args: {
       csvSize = tempCSVSize * 1000000
     }
   }
-  const rawSheet = workbook.Sheets[args.sheetName]
-  const decodedRange = XLSX.utils.decode_range(args.range)
-
-  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
-  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
   let fileNum = 1
   let writeStream = splitWorksheet ? fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8') : fs.createWriteStream(`${outputFilePath}.csv`, 'utf-8')
   const pass = new PassThrough()
   pass.on('end', () => {
-    const outputFiles = fastGlob.sync(`${outputFilePath}*.csv`, { cwd: parsedFile.dir, onlyFiles: true }).map(file => `  ${colors.cyan(relative(parsedFile.dir, file))}`)
+    const outputFiles = fg.sync(`${outputFilePath}*.csv`, { cwd: parsedFile.dir, onlyFiles: true }).map(file => `  ${colors.cyan(relative(parsedFile.dir, file))}`)
     spinner.success(
       `${colors.green('SUCCESS!')} The output file(s) have been saved to the following location(s):\n${outputFiles.join('\n')}`,
     )
