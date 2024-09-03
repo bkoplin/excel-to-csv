@@ -1,81 +1,114 @@
+import * as os from 'node:os'
 import * as fs from 'node:fs'
-import { join, parse } from 'node:path'
-import type { ParsedPath } from 'node:path/posix'
+import { basename, join, parse, relative, sep } from 'node:path'
 import { PassThrough } from 'node:stream'
+import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { ceil, padStart, range } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
-import type { Spinner } from 'yocto-spinner'
 import dayjs from 'dayjs'
 import colors from 'picocolors'
-import { confirm, number } from '@inquirer/prompts'
+import { confirm, input, number, select } from '@inquirer/prompts'
+import { Separator } from '@inquirer/core'
 import { emptyDirSync, ensureDirSync } from 'fs-extra'
+import fg from 'fast-glob'
+import { isUndefined } from '@antfu/utils'
+import yoctoSpinner from 'yocto-spinner'
 
 XLSX.set_fs(fs)
+
+const spinner = yoctoSpinner({ text: 'Parsing…' })
+
 export interface Arguments {
   filePath?: string
   sheetName?: string
   range?: string
 }
+export async function parseArguments(args: { filePath?: string | undefined, sheetName?: string | undefined, range?: string | undefined }): Promise<void> {
+  if (isUndefined(args.filePath)) {
+    const cloudFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'), value: folder }))
+    const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder), value: folder }))
 
-export async function parseWorksheet(args: {
-  filePath: string
-  sheetName: string
-  range: string
-}, spinner: Spinner): Promise<void> {
-  const { filePath, sheetName, range: inputRange } = args
-  const parsedFile = parse(filePath)
-  const workbook = XLSX.readFile(filePath, { raw: true, cellDates: true, dense: true, sheet: sheetName })
-  let csvSize = fs.statSync(filePath).size
+    const dirName = await select({
+      name: 'dirName',
+      message: 'Where do you want to start looking for your Excel file?',
+      pageSize: 20,
+      choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
+    })
+    const filePath = await inquirerFileSelector({
+      message: 'Navigate to the Excel file you want to parse',
+      basePath: dirName,
+      hideNonMatch: true,
+      allowCancel: true,
+      pageSize: 20,
+      match(filePath) {
+        const isValidFilePath = !filePath.path.split(sep).some(v => v.startsWith('.'))
+
+        return isValidFilePath && (filePath.isDir || /\.xlsx?$/.test(filePath.name))
+      },
+    })
+    args.filePath = filePath
+  }
+  spinner.text = `Parsing ${colors.cyan(`"${args.filePath}"`)}...\n`
+
+  const { SheetNames, Sheets } = XLSX.readFile(args.filePath, { raw: true, cellDates: true, dense: true })
+  let csvSize = fs.statSync(args.filePath).size
+  if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
+    const answer = await select({ name: 'sheetName', message: 'Select the worksheet to parse', choices: SheetNames.map(value => ({ name: value, value })) })
+    args.sheetName = answer
+  }
+  if (isUndefined(args.range)) {
+    const answer = await input({ name: 'range', message: 'Enter the range of the worksheet to parse', default: Sheets[args.sheetName]['!ref'] })
+    args.range = answer
+  }
+  const parsedFile = parse(args.filePath)
+  const rawSheet = Sheets[args.sheetName]
+  const decodedRange = XLSX.utils.decode_range(args.range)
+
+  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
+  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
   let splitWorksheet = false
-  let outputFilePath = `${parsedFile.dir}/${parsedFile.name}_${sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`
-  if (csvSize > 5000000) {
-    splitWorksheet = await confirm({ message: 'The file is large. Would you like to split the output into multiple CSVs?', default: false })
+  let outputFilePath = `${parsedFile.dir}/${parsedFile.name}_${args.sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`
+  const csvSizeInMegabytes = ceil(csvSize / 1000000, 2)
+  if (csvSizeInMegabytes > 5) {
+    splitWorksheet = await confirm({ message: `The size of the resulting CSV file could exceed ${colors.yellow(`${csvSizeInMegabytes * 4}Mb`)}. Would you like to split the output into multiple CSVs?`, default: false })
     if (splitWorksheet) {
       ensureDirSync(join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss')))
       emptyDirSync(join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss')))
-      outputFilePath = join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss'), `${parsedFile.name} ${sheetName}`)
-      const tempCSVSize = await number({ message: 'Size of output CSV files (in Mb):', default: ceil(csvSize / 1000000, 2), min: 1, max: ceil(csvSize / 1000000, 2) * 4 })
+      outputFilePath = join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss'), `${parsedFile.name} ${args.sheetName}`)
+      const tempCSVSize = await number({ message: 'Size of output CSV files (in Mb):', default: csvSizeInMegabytes, min: 1, max: csvSizeInMegabytes * 4 })
       csvSize = tempCSVSize * 1000000
     }
-    else {
-      csvSize = csvSize * 10
-    }
   }
-  spinner.start()
-  const parsingConfig: FileParserOptions = { workbook, sheetName, inputRange, parsedFile, spinner, outputFilePath, csvSize, splitWorksheet }
-  processWorksheet(parsingConfig)
-}
-interface FileParserOptions {
-  workbook?: XLSX.WorkBook
-  sheetName: string
-  inputRange: string
-  parsedFile: ParsedPath
-  spinner: Spinner
-  outputFilePath: string
-  csvSize: number
-  splitWorksheet: boolean
-}
-
-async function processWorksheet({ workbook, sheetName, inputRange, parsedFile, spinner, outputFilePath, csvSize, splitWorksheet }: FileParserOptions): void {
-  const rawSheet = workbook!.Sheets[sheetName]
-  const decodedRange = XLSX.utils.decode_range(inputRange)
-  /* let fields: string[] = []
-  const data: JsonValue[] = [] */
-  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
-  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
   let fileNum = 1
-  let writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
+  let writeStream = splitWorksheet ? fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8') : fs.createWriteStream(`${outputFilePath}.csv`, 'utf-8')
+  const pass = new PassThrough()
+  pass.on('end', () => {
+    const outputFiles = fg.sync(`${outputFilePath}*.csv`, { cwd: parsedFile.dir, onlyFiles: true }).map(file => `  ${colors.cyan(relative(parsedFile.dir, file))}`)
+    spinner.success(
+      `${colors.green('SUCCESS!')} The output file(s) have been saved to the following location(s):\n${outputFiles.join('\n')}`,
+    )
+  })
   writeStream.on('close', () => {
     fileNum += 1
   })
-  const pass = new PassThrough()
-  pass.on('data', (chunk) => {
+  pass.on('data', (chunk: Blob) => {
     pass.pause()
-    const streamWriteResult = writeStream.write(chunk)
+    const { text, isLastRow } = JSON.parse(chunk) as { text: string, isLastRow: boolean }
     if (!splitWorksheet) {
-      pass.resume()
+      if (!writeStream.write(text)) {
+        writeStream.once('drain', () => {
+          if (isLastRow)
+            pass.end()
+          else pass.resume()
+        })
+      }
+      else {
+        if (isLastRow)
+          pass.end()
+        else pass.resume()
+      }
     }
     else if (!streamWriteResult) {
       writeStream.once('drain', () => {
@@ -83,13 +116,58 @@ async function processWorksheet({ workbook, sheetName, inputRange, parsedFile, s
       })
     }
     else {
-      ({ writeStream, fileNum } = updateWriteStream(writeStream, csvSize, pass, fileNum, outputFilePath))
+      if (!writeStream.write(text)) {
+        writeStream.once('drain', () => {
+          if (isLastRow) {
+            pass.end()
+          }
+          else if (writeStream.bytesWritten < csvSize) {
+            pass.resume()
+          }
+          else {
+            writeStream.destroy()
+            fileNum += 1
+            writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
+            pass.resume()
+          }
+        })
+      }
+      else {
+        if (isLastRow) {
+          pass.end()
+        }
+        else if (writeStream.bytesWritten < csvSize) {
+          pass.resume()
+        }
+        else {
+          writeStream.destroy()
+          fileNum += 1
+          writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
+          pass.resume()
+        }
+      }
     }
   })
-  pass.on('end', () => {
-    spinner.success(
-      colors.green('Parsed successfully'),
-    )
+
+  rowIndices.forEach((rowIdx) => {
+    const rowdata: JsonValue[] = []
+    columnIndices.forEach((colIdx) => {
+      const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
+      rowdata.push((currentCell?.v ?? null) as string)
+    })
+    const isLastRow = rowIdx === decodedRange.e.r
+    if (rowIdx === decodedRange.s.r) {
+      rowdata.push('source_file', 'source_sheet', 'source_range')
+      const csv = Papa.unparse([rowdata])
+      if (splitWorksheet)
+        fs.writeFileSync(`${outputFilePath}_HEADER.csv`, csv, 'utf-8')
+      else pass.write(JSON.stringify({ text: `${csv}\n`, isLastRow }))
+    }
+    else {
+      rowdata.push(parsedFile.base, args.sheetName, args.range)
+      const csv = Papa.unparse([rowdata])
+      pass.write(JSON.stringify({ text: `${csv}\n`, isLastRow }))
+    }
   })
   rowIndices.forEach((rowIdx) => {
     const rowdata: JsonValue[] = []

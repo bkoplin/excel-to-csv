@@ -37,13 +37,5 @@
     "yaml"
   ],
   "typescript.tsdk": "node_modules/typescript/lib",
-  "files.exclude": {
-    "**/.git": false,
-    "**/.svn": true,
-    "**/.hg": true,
-    "**/CVS": true,
-    "**/.DS_Store": true,
-    "**/Thumbs.db": true
-  },
-  "explorerExclude.backup": {}
+  "gitlens.experimental.generateCommitMessagePrompt": "Commit Messages must have a short description that is less than 50 characters followed by a newline and a more detailed description.\n- Write concisely using an informal tone\n- List significant changes\n- Do not use specific names or files from the code\n- Do not use phrases like \"this commit\", \"this change\", etc.\n- Prefix the commit message with a semantic versioning label like \"feat,\" \"chore,\" \"fix,\" etc. "
 }
