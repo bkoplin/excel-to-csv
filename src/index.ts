@@ -95,7 +95,7 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
   })
   pass.on('data', (chunk: Blob) => {
     pass.pause()
-    const { text, isLastRow } = JSON.parse(chunk) as { text: string, isLastRow: boolean }
+    const { text, isLastRow } = JSON.parse(chunk.toString()) as { text: string, isLastRow: boolean }
     const streamWriteResult = writeStream.write(text)
     if (!splitWorksheet) {
       if (!streamWriteResult) {
