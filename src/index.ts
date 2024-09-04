@@ -96,8 +96,9 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
   pass.on('data', (chunk: Blob) => {
     pass.pause()
     const { text, isLastRow } = JSON.parse(chunk) as { text: string, isLastRow: boolean }
+    const streamWriteResult = writeStream.write(text)
     if (!splitWorksheet) {
-      if (!writeStream.write(text)) {
+      if (!streamWriteResult) {
         writeStream.once('drain', () => {
           if (isLastRow)
             pass.end()
@@ -164,7 +165,7 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
       else pass.write(JSON.stringify({ text: `${csv}\n`, isLastRow }))
     }
     else {
-      rowdata.push(parsedFile.base, args.sheetName, args.range)
+      rowdata.push(parsedFile.base, args.sheetName!, args.range!)
       const csv = Papa.unparse([rowdata])
       pass.write(JSON.stringify({ text: `${csv}\n`, isLastRow }))
     }
@@ -183,7 +184,7 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
       else pass.write(`${csv}\n`)
     }
     else {
-      rowdata.push(parsedFile.base, sheetName, inputRange)
+      rowdata.push(parsedFile.base, args.sheetName!, args.range!)
       const csv = Papa.unparse([rowdata])
       pass.write(`${csv}\n`)
     }
