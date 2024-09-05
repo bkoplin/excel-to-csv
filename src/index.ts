@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { ceil, padStart, range } from 'lodash-es'
+import { ceil, curryRight, inRange, padStart, range } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
 import dayjs from 'dayjs'
 import colors from 'picocolors'
@@ -216,9 +216,13 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
 }): Promise<string> {
   const worksheetRange = Sheets[args.sheetName!]['!ref']
   const parsedRange = XLSX.utils.decode_range(worksheetRange)
+  const isRowInRange = curryRight(inRange, 3)(parsedRange.e.r + 1)(parsedRange.s.r)
+  const isColumnInRange = curryRight(inRange, 3)(parsedRange.e.c + 1)(parsedRange.s.c)
+  const isRangeInDefaultRange = (r: XLSX.Range): boolean => isRowInRange(r.s.r) === true && isColumnInRange(r.s.c) === true && isRowInRange(r.e.r) === true && isColumnInRange(r.e.c) === true
   const rangeType = await expand({
     message: 'How do you want to specify the range of the worksheet to parse?',
     default: 'e',
+    expanded: true,
     choices: [
       {
         name: 'Excel Format (e.g. A1:B10)',
@@ -232,11 +236,17 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
       },
     ],
   })
-  if (rangeType === 'e') {
+  if (rangeType === 'Excel Format') {
     const userRangeInput = input({
       name: 'range',
       message: 'Enter the range of the worksheet to parse',
       default: worksheetRange,
+      validate: (value: string) => {
+        const isValidInput = isRangeInDefaultRange(XLSX.utils.decode_range(value))
+        if (!isValidInput)
+          return `The range must be within the worksheet's default range (${XLSX.utils.encode_range(parsedRange)})`
+        return true
+      },
     }, {
       clearPromptOnDone: false,
       signal: AbortSignal.timeout(5000),
@@ -256,6 +266,13 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
       default: parsedRange.s.r + 1,
       min: parsedRange.s.r + 1,
       max: parsedRange.e.r + 1,
+      step: 1,
+      /* theme: {
+           style: {
+             answer: (text: string) => colors.cyan(`Row "${text}"`),
+             defaultAnswer: (text: string) => colors.cyan(`Row "${text}"`),
+           },
+         }, */
     })
     const endRow = await number({
       name: 'endRow',
@@ -263,11 +280,19 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
       default: parsedRange.e.r + 1,
       min: startRow,
       max: parsedRange.e.r + 1,
+      step: 1,
+      /* theme: {
+           style: {
+             answer: (text: string) => colors.cyan(`Row "${text}"`),
+             defaultAnswer: (text: string) => colors.cyan(`Row "${text}"`),
+           },
+         }, */
     })
     const startCol = await input({
       name: 'startCol',
       message: 'Enter the starting column reference (e.g., A)',
       default: XLSX.utils.encode_col(parsedRange.s.c),
+      // transformer: (value: number) => `Column "${value}"`,
       validate: (value: string) => {
         const valueIsValid = /^[A-Z]+$/.test(value)
         if (!valueIsValid) {
@@ -280,6 +305,7 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
       name: 'endCol',
       message: 'Enter the ending column reference (e.g., AB)',
       default: XLSX.utils.encode_col(parsedRange.e.c),
+      // transformer: (value: number) => `Column "${value}"`,
       validate: (value: string) => {
         const isGreaterThanOrEqualToStartColumn = XLSX.utils.decode_col(value) >= XLSX.utils.decode_col(startCol)
         const isValidReference = /^[A-Z]+$/.test(value)
