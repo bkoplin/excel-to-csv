@@ -131,3 +131,4 @@ dist
 exe
 .DS_Store
 excel-to-csv
+.env
