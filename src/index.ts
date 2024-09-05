@@ -27,27 +27,7 @@ export interface Arguments {
 }
 export async function parseArguments(args: { filePath?: string | undefined, sheetName?: string | undefined, range?: string | undefined }): Promise<void> {
   if (isUndefined(args.filePath)) {
-    const cloudFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'), value: folder }))
-    const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder), value: folder }))
-
-    const dirName = await select({
-      name: 'dirName',
-      message: 'Where do you want to start looking for your Excel file?',
-      pageSize: 20,
-      choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
-    })
-    const filePath = await inquirerFileSelector({
-      message: 'Navigate to the Excel file you want to parse',
-      basePath: dirName,
-      hideNonMatch: true,
-      allowCancel: true,
-      pageSize: 20,
-      match(filePath) {
-        const isValidFilePath = !filePath.path.split(sep).some(v => v.startsWith('.'))
-
-        return isValidFilePath && (filePath.isDir || /\.xlsx?$/.test(filePath.name))
-      },
-    })
+    const filePath = await getExcelFilePath()
     args.filePath = filePath
   }
   spinner.text = `Parsing ${colors.cyan(`"${args.filePath}"`)}...\n`
@@ -55,11 +35,11 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
   const { SheetNames, Sheets } = XLSX.readFile(args.filePath, { raw: true, cellDates: true, dense: true })
   let csvSize = fs.statSync(args.filePath).size
   if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
-    const answer = await select({ name: 'sheetName', message: 'Select the worksheet to parse', choices: SheetNames.map(value => ({ name: value, value })) })
+    const answer = await chooseSheetToParse(SheetNames)
     args.sheetName = answer
   }
   if (isUndefined(args.range)) {
-    const answer = await input({ name: 'range', message: 'Enter the range of the worksheet to parse', default: Sheets[args.sheetName]['!ref'] })
+    const answer = await getWorksheetRange(Sheets, args)
     args.range = answer
   }
   const parsedFile = parse(args.filePath)
@@ -90,15 +70,12 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
       `${colors.green('SUCCESS!')} The output file(s) have been saved to the following location(s):\n${outputFiles.join('\n')}`,
     )
   })
-  writeStream.on('close', () => {
-    fileNum += 1
-  })
   pass.on('data', (chunk: Blob) => {
     pass.pause()
     const { text, isLastRow } = JSON.parse(chunk.toString()) as { text: string, isLastRow: boolean }
     const streamWriteResult = writeStream.write(text)
-    if (!splitWorksheet) {
-      if (!streamWriteResult) {
+    if (splitWorksheet === false) {
+      if (streamWriteResult === false) {
         writeStream.once('drain', () => {
           if (isLastRow)
             pass.end()
@@ -111,42 +88,13 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
         else pass.resume()
       }
     }
-    else if (!streamWriteResult) {
+    else if (streamWriteResult === false) {
       writeStream.once('drain', () => {
-        ({ writeStream, fileNum } = updateWriteStream(writeStream, csvSize, pass, fileNum, outputFilePath))
+        ({ writeStream, fileNum } = updateWriteStream(isLastRow, pass, writeStream, csvSize, fileNum, outputFilePath))
       })
     }
     else {
-      if (!writeStream.write(text)) {
-        writeStream.once('drain', () => {
-          if (isLastRow) {
-            pass.end()
-          }
-          else if (writeStream.bytesWritten < csvSize) {
-            pass.resume()
-          }
-          else {
-            writeStream.destroy()
-            fileNum += 1
-            writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
-            pass.resume()
-          }
-        })
-      }
-      else {
-        if (isLastRow) {
-          pass.end()
-        }
-        else if (writeStream.bytesWritten < csvSize) {
-          pass.resume()
-        }
-        else {
-          writeStream.destroy()
-          fileNum += 1
-          writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
-          pass.resume()
-        }
-      }
+      ({ writeStream, fileNum } = updateWriteStream(isLastRow, pass, writeStream, csvSize, fileNum, outputFilePath))
     }
   })
 
@@ -201,15 +149,55 @@ export async function parseArguments(args: { filePath?: string | undefined, shee
        spinner.success(colors.green('Parsed successfully'))
      }) */
 }
-function updateWriteStream(writeStream: fs.WriteStream, csvSize: number, pass: PassThrough, fileNum: number, outputFilePath: string): { writeStream: fs.WriteStream, fileNum: number } {
-  if (writeStream.bytesWritten < csvSize) {
+function updateWriteStream(isLastRow: boolean, pass: PassThrough, writeStream: fs.WriteStream, csvSize: number, fileNum: number, outputFilePath: string): { writeStream: fs.WriteStream, fileNum: number } | { writeStream: fs.WriteStream, fileNum: number } {
+  if (isLastRow) {
+    pass.end()
+  }
+  else if (writeStream.bytesWritten < csvSize) {
     pass.resume()
   }
   else {
     writeStream.destroy()
     fileNum += 1
     writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
+    writeStream.on('error', (err) => {
+      spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+      pass.destroy()
+    })
     pass.resume()
   }
   return { writeStream, fileNum }
+}
+
+async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, args: { filePath?: string | undefined, sheetName?: string | undefined, range?: string | undefined }): Promise<string> {
+  return input({ name: 'range', message: 'Enter the range of the worksheet to parse', default: Sheets[args.sheetName!]['!ref'] })
+}
+
+async function chooseSheetToParse(SheetNames: string[]): Promise<string> {
+  return select({ name: 'sheetName', message: 'Select the worksheet to parse', choices: SheetNames.map(value => ({ name: value, value })) })
+}
+
+async function getExcelFilePath(): Promise<string> {
+  const cloudFolders = fg.sync(['Library/CloudStorage/**'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'), value: folder }))
+  const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], { onlyDirectories: true, absolute: true, cwd: os.homedir(), deep: 1 }).map(folder => ({ name: basename(folder), value: folder }))
+
+  const dirName = await select({
+    name: 'dirName',
+    message: 'Where do you want to start looking for your Excel file?',
+    pageSize: 20,
+    choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
+  })
+  const filePath = await inquirerFileSelector({
+    message: 'Navigate to the Excel file you want to parse',
+    basePath: dirName,
+    hideNonMatch: true,
+    allowCancel: true,
+    pageSize: 20,
+    match(filePath) {
+      const isValidFilePath = !filePath.path.split(sep).some(v => v.startsWith('.'))
+
+      return isValidFilePath && (filePath.isDir || /\.xlsx?$/.test(filePath.name))
+    },
+  })
+  return filePath
 }
