@@ -2,6 +2,7 @@ import * as os from 'node:os'
 import * as fs from 'node:fs'
 import { basename, join, parse, relative, sep } from 'node:path'
 import { PassThrough } from 'node:stream'
+import type { ParsedPath } from 'node:path/posix'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
@@ -56,7 +57,10 @@ export async function parseArguments(args: {
   const parsedFile = parse(args.filePath)
   const rawSheet = Sheets[args.sheetName]
   const decodedRange = XLSX.utils.decode_range(args.range)
-
+  const rangeIncludesHeader = await confirm({
+    message: `Does range ${colors.cyan(`"${args.range}"`)} include the header row?`,
+    default: true,
+  })
   const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
   const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
   let splitWorksheet = false
@@ -81,17 +85,18 @@ export async function parseArguments(args: {
     }
   }
   let fileNum = 1
-  let writeStream = splitWorksheet ? fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8') : fs.createWriteStream(`${outputFilePath}.csv`, 'utf-8')
+  let writeStream: fs.WriteStream
+  const outputFiles: string[] = []
+  let newFileName = `${outputFilePath}.csv`
+  if (splitWorksheet) {
+    newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
+    writeStream = fs.createWriteStream(newFileName, 'utf-8')
+  }
+  else {
+    writeStream = fs.createWriteStream(newFileName, 'utf-8')
+  }
+
   const pass = new PassThrough()
-  pass.on('end', () => {
-    const outputFiles = fg.sync(`${outputFilePath}*.csv`, {
-      cwd: parsedFile.dir,
-      onlyFiles: true,
-    }).map(file => `  ${colors.cyan(relative(parsedFile.dir, file))}`)
-    spinner.success(
-      `${colors.green('SUCCESS!')} The output file(s) have been saved to the following location(s):\n${outputFiles.join('\n')}`,
-    )
-  })
   pass.on('data', (chunk: Blob) => {
     pass.pause()
     const { text, isLastRow } = JSON.parse(chunk.toString()) as {
@@ -102,24 +107,68 @@ export async function parseArguments(args: {
     if (splitWorksheet === false) {
       if (streamWriteResult === false) {
         writeStream.once('drain', () => {
-          if (isLastRow)
-            pass.end()
-          else pass.resume()
+          if (isLastRow) {
+            outputFiles.push(newFileName)
+            finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
+          }
+          else {
+            pass.resume()
+          }
         })
       }
       else {
-        if (isLastRow)
-          pass.end()
-        else pass.resume()
+        if (isLastRow) {
+          outputFiles.push(newFileName)
+          finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
+        }
+        else {
+          pass.resume()
+        }
       }
     }
     else if (streamWriteResult === false) {
       writeStream.once('drain', () => {
-        ({ writeStream, fileNum } = updateWriteStream(isLastRow, pass, writeStream, csvSize, fileNum, outputFilePath))
+        if (isLastRow) {
+          outputFiles.push(newFileName)
+          finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
+        }
+        else if (writeStream.bytesWritten < csvSize) {
+          pass.resume()
+        }
+        else {
+          writeStream.destroy()
+          newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
+          outputFiles.push(newFileName)
+          fileNum += 1
+          writeStream = fs.createWriteStream(newFileName, 'utf-8')
+          writeStream.on('error', (err) => {
+            spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+            pass.destroy()
+          })
+          pass.resume()
+        }
       })
     }
     else {
-      ({ writeStream, fileNum } = updateWriteStream(isLastRow, pass, writeStream, csvSize, fileNum, outputFilePath))
+      if (isLastRow) {
+        outputFiles.push(newFileName)
+        finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
+      }
+      else if (writeStream.bytesWritten < csvSize) {
+        pass.resume()
+      }
+      else {
+        writeStream.destroy()
+        newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
+        outputFiles.push(newFileName)
+        fileNum += 1
+        writeStream = fs.createWriteStream(newFileName, 'utf-8')
+        writeStream.on('error', (err) => {
+          spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+          pass.destroy()
+        })
+        pass.resume()
+      }
     }
   })
 
@@ -134,7 +183,9 @@ export async function parseArguments(args: {
       rowdata.push('source_file', 'source_sheet', 'source_range')
       const csv = Papa.unparse([rowdata])
       if (splitWorksheet) {
-        fs.writeFileSync(`${outputFilePath}_HEADER.csv`, csv, 'utf-8')
+        const headerFilePath = `${outputFilePath}_HEADER.csv`
+        outputFiles.push(headerFilePath)
+        fs.writeFileSync(headerFilePath, csv, 'utf-8')
       }
       else {
         pass.write(JSON.stringify({
@@ -158,7 +209,7 @@ export async function parseArguments(args: {
       const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
       rowdata.push((currentCell?.v ?? null) as string)
     })
-    if (rowIdx === decodedRange.s.r) {
+    if (rowIdx === decodedRange.s.r && rangeIncludesHeader) {
       rowdata.push('source_file', 'source_sheet', 'source_range')
       const csv = Papa.unparse([rowdata])
       if (splitWorksheet)
@@ -170,10 +221,10 @@ export async function parseArguments(args: {
       const csv = Papa.unparse([rowdata])
       pass.write(`${csv}\n`)
     }
-    if (rowIdx === decodedRange.e.r) {
-      pass.end()
-    }
-    // dataForCSV.push(rowdata)
+    // if (rowIdx === decodedRange.e.r) {
+    //   finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet)
+    // }
+    //  dataForCSV.push(rowdata) */
   })
   /* fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}.csv`, csv, {
        encoding: 'utf-8',
@@ -183,30 +234,22 @@ export async function parseArguments(args: {
        spinner.success(colors.green('Parsed successfully'))
      }) */
 }
-function updateWriteStream(isLastRow: boolean, pass: PassThrough, writeStream: fs.WriteStream, csvSize: number, fileNum: number, outputFilePath: string): {
-  writeStream: fs.WriteStream
-  fileNum: number
-} {
-  if (isLastRow) {
-    pass.end()
-  }
-  else if (writeStream.bytesWritten < csvSize) {
-    pass.resume()
+function finishParsing(pass: PassThrough, outputFilePath: string, parsedFile: ParsedPath, rangeIncludesHeader: boolean, splitWorksheet: boolean, outputFiles: string[]): void {
+  pass.end()
+  const formattedFiles = outputFiles.map(file => `\t${colors.cyan(relative(parsedFile.dir, file))}`)
+  let successMessage = `${colors.green('SUCCESS! The output file(s) have been saved to the following location(s):')}\n${formattedFiles.join('\n')}`
+  if (rangeIncludesHeader) {
+    if (splitWorksheet)
+      successMessage += `\n\n${colors.yellow('NOTE: The header row was included in the output as a separate file. You will have to copy its contents into the Data Loader.')}`
+    else successMessage += `\n\n${colors.yellow('NOTE: The header row was included in the output.')}`
   }
   else {
-    writeStream.destroy()
-    fileNum += 1
-    writeStream = fs.createWriteStream(`${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`, 'utf-8')
-    writeStream.on('error', (err) => {
-      spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
-      pass.destroy()
-    })
-    pass.resume()
+    successMessage += `\n\n${colors.yellow('NOTE: The header row was not included in the output. You will have to copy it from the source file into the Data Loader.')}`
   }
-  return {
-    writeStream,
-    fileNum,
-  }
+  spinner.start()
+  spinner.success(
+    successMessage,
+  )
 }
 
 async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, args: {
@@ -318,7 +361,10 @@ async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, ar
         return true
       },
     })
-    return `${startCol}${startRow}:${endCol}${endRow}`
+
+    const selectedRange = `${startCol}${startRow}:${endCol}${endRow}`
+    spinner.text = `Will parse ${colors.cyan(`"${selectedRange}"`)} from worksheet ${colors.cyan(`"${args.sheetName}"`)}.\n`
+    return selectedRange
   }
 }
 
@@ -326,8 +372,8 @@ async function chooseSheetToParse(SheetNames: string[]): Promise<string> {
   return select({
     name: 'sheetName',
     message: 'Select the worksheet to parse',
-    choices: SheetNames.map(value => ({
-      name: `1) ${value}`,
+    choices: SheetNames.map((value, i) => ({
+      name: `${i + 1}) ${value}`,
       value,
       short: value,
     })),
@@ -362,7 +408,7 @@ async function getExcelFilePath(): Promise<{
   const dirName = await select({
     name: 'dirName',
     message: 'Where do you want to start looking for your Excel file?',
-    pageSize: 20,
+    // pageSize: 20,
     choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
   }, {
     clearPromptOnDone: false,
@@ -372,7 +418,7 @@ async function getExcelFilePath(): Promise<{
     basePath: dirName,
     hideNonMatch: true,
     allowCancel: true,
-    pageSize: 20,
+    // pageSize: 20,
     theme: {
       style: {
         answer: (text: string) => colors.cyan(`./${basename(dirName)}/${relative(dirName, text)}`),
