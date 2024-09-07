@@ -16,6 +16,7 @@ export default antfu(
       }],
       'style/multiline-comment-style': ['error', 'bare-block'],
       'ts/no-use-before-define': 'error',
+      'node/prefer-global/process': ['off'],
       'style/object-curly-newline': ['error', {
         multiline: true,
         consistent: true,
