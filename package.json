@@ -1,7 +1,7 @@
 {
   "name": "excel-to-csv",
   "type": "module",
-  "version": "4.1.0-beta.1",
+  "version": "4.1.0-beta.7",
   "packageManager": "pnpm@9.9.0",
   "description": "_description_",
   "license": "MIT",
@@ -43,7 +43,8 @@
     "build": "unbuild",
     "lint": "eslint . --fix",
     "prepublishOnly": "nr build",
-    "release": "op run --env-file=\"./.env\" -- pnpm bumpp && changelogithub",
+    "release": "pnpm bumpp && changelogithub",
+    "secrets": "op inject -i .env.tpl -o .env",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "prepare": "simple-git-hooks"
