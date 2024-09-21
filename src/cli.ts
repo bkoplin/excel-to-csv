@@ -1,6 +1,8 @@
 import * as Commander from '@commander-js/extra-typings'
 import { parseArguments } from './index'
 
+// eslint-disable-next-line no-console
+console.clear()
 const program = new Commander.Command()
   .version('0.1.0')
   .option('-f, --file-path <STRING>', 'path to Excel file')
