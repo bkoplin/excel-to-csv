@@ -62,6 +62,7 @@
     "magic-regexp": "^0.8.0",
     "papaparse": "^5.4.1",
     "picocolors": "^1.0.1",
+    "radash": "^12.1.0",
     "type-fest": "^4.26.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.5.0",
