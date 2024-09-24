@@ -6,7 +6,7 @@ import type { ParsedPath } from 'node:path/posix'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
-import { ceil, curryRight, inRange, padStart, range } from 'lodash-es'
+import { ceil, curryRight, inRange, padStart, range, snakeCase } from 'lodash-es'
 import type { JsonValue } from 'type-fest'
 import dayjs from 'dayjs'
 import colors from 'picocolors'
@@ -16,6 +16,7 @@ import { emptyDirSync, ensureDirSync } from 'fs-extra'
 import fg from 'fast-glob'
 import { isUndefined } from '@antfu/utils'
 import yoctoSpinner from 'yocto-spinner'
+import { counting } from 'radash'
 
 XLSX.set_fs(fs)
 
@@ -173,14 +174,26 @@ export async function parseArguments(args: {
   })
 
   rowIndices.forEach((rowIdx) => {
-    const rowdata: JsonValue[] = []
+    let rowdata: JsonValue[] = []
     columnIndices.forEach((colIdx) => {
       const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
       rowdata.push((currentCell?.v ?? null) as string)
     })
     const isLastRow = rowIdx === decodedRange.e.r
     if (rowIdx === decodedRange.s.r) {
-      rowdata.push('source_file', 'source_sheet', 'source_range')
+      if (rangeIncludesHeader) {
+        const rowValCounts = counting(rowdata, v => v)
+        rowdata = rowdata.reverse().map((v): string => {
+          if (rowValCounts[v] > 1) {
+            rowValCounts[v] -= 1
+            const fieldName = `${v} ${rowValCounts[v]}`
+            return snakeCase(fieldName)
+          }
+          return snakeCase(v)
+        })
+        rowdata = rowdata.reverse()
+        rowdata.push('source_file', 'source_sheet', 'source_range')
+      }
       const csv = Papa.unparse([rowdata])
       if (splitWorksheet) {
         const headerFilePath = `${outputFilePath}_HEADER.csv`
@@ -203,29 +216,29 @@ export async function parseArguments(args: {
       }))
     }
   })
-  rowIndices.forEach((rowIdx) => {
-    const rowdata: JsonValue[] = []
-    columnIndices.forEach((colIdx) => {
-      const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
-      rowdata.push((currentCell?.v ?? null) as string)
-    })
-    if (rowIdx === decodedRange.s.r && rangeIncludesHeader) {
-      rowdata.push('source_file', 'source_sheet', 'source_range')
-      const csv = Papa.unparse([rowdata])
-      if (splitWorksheet)
-        fs.writeFileSync(`${outputFilePath}_HEADER.csv`, csv, 'utf-8')
-      else pass.write(`${csv}\n`)
-    }
-    else {
-      rowdata.push(parsedFile.base, args.sheetName!, args.range!)
-      const csv = Papa.unparse([rowdata])
-      pass.write(`${csv}\n`)
-    }
-    // if (rowIdx === decodedRange.e.r) {
-    //   finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet)
-    // }
-    //  dataForCSV.push(rowdata) */
-  })
+  // rowIndices.forEach((rowIdx) => {
+  //   const rowdata: JsonValue[] = []
+  //   columnIndices.forEach((colIdx) => {
+  //     const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
+  //     rowdata.push((currentCell?.v ?? null) as string)
+  //   })
+  //   if (rowIdx === decodedRange.s.r && rangeIncludesHeader) {
+  //     rowdata.push('source_file', 'source_sheet', 'source_range')
+  //     const csv = Papa.unparse([rowdata])
+  //     if (splitWorksheet)
+  //       fs.writeFileSync(`${outputFilePath}_HEADER.csv`, csv, 'utf-8')
+  //     else pass.write(`${csv}\n`)
+  //   }
+  //   else {
+  //     rowdata.push(parsedFile.base, args.sheetName!, args.range!)
+  //     const csv = Papa.unparse([rowdata])
+  //     pass.write(`${csv}\n`)
+  //   }
+  //   // if (rowIdx === decodedRange.e.r) {
+  //   //   finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet)
+  //   // }
+  //   //  dataForCSV.push(rowdata) */
+  // })
   /* fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}.csv`, csv, {
        encoding: 'utf-8',
      }, (err) => {
