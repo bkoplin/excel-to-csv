@@ -1,7 +1,7 @@
 /* eslint-disable node/prefer-global/buffer */
 import * as os from 'node:os'
 import * as fs from 'node:fs'
-import { basename, join, parse, relative, sep } from 'node:path'
+import { basename, format, join, parse, relative, sep } from 'node:path'
 import type { PassThrough } from 'node:stream'
 import { Writable } from 'node:stream'
 import type { ParsedPath } from 'node:path/posix'
@@ -9,8 +9,8 @@ import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import Papa from 'papaparse'
 import { ceil } from 'lodash-es'
-import { inRange, isEmpty, range, snake } from 'radash'
-import type { JsonPrimitive, JsonValue, SetRequired } from 'type-fest'
+import { clone, get, inRange, isEmpty, omit, range, snake } from 'radash'
+import type { JsonPrimitive, Merge, SetRequired } from 'type-fest'
 import dayjs from 'dayjs'
 import colors from 'picocolors'
 import { confirm, expand, input, number, select } from '@inquirer/prompts'
@@ -24,30 +24,135 @@ XLSX.set_fs(fs)
 
 const spinner = yoctoSpinner({ text: 'Parsing…' })
 
-class SizeTrackingWritable extends Writable {
+class SizeTrackingWritable<SplitWorksheet> extends Writable {
   private byteSize: number = 0
-  private maxSize: number
-  private filePath: string
+  private maxSize: number = 0
+  // private _filePath: string
   private fileStream: fs.WriteStream
+  _currentRowData: JsonPrimitive[] = []
+  _isFirstRow: boolean = true
+  _isLastRow: boolean = false
+  outputFiles: string[] = []
+  private args: Merge<Arguments<SplitWorksheet>, {
+    splitWorksheet: SplitWorksheet
+    csvFileSize: SplitWorksheet extends true ? number : undefined
+  }>
 
-  constructor(filePath: string, maxSize: number) {
+  constructor(args: Merge<Arguments<SplitWorksheet>, {
+    splitWorksheet: SplitWorksheet
+    csvFileSize: SplitWorksheet extends true ? number : undefined
+  }>) {
     super()
-    this.filePath = filePath
-    this.maxSize = maxSize
+    this.args = args
+    this.args.fileNum = 1
+    if (isUndefined(args.csvFileSize) && args.splitWorksheet === true) {
+      spinner.error('The size of the output CSV files must be specified when splitting the worksheet')
+      process.exit(1)
+    }
+    // this._filePath = ''
+    this.maxSize = args.splitWorksheet === true ? args.csvFileSize! : 0
     this.fileStream = fs.createWriteStream(this.filePath)
     this.fileStream.on('error', (err) => {
       spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
     })
+    this.fileStream.on('close', () => {
+      spinner.success(`Finished writing ${colors.cyan(`"${this.filePath}"`)}`)
+    })
   }
 
-  _write(chunk: string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-    this.byteSize += chunk.length
-    if (this.byteSize > this.maxSize) {
-      this.fileStream.end()
-      this.byteSize = chunk.length
-      this.fileStream = fs.createWriteStream(this.filePath, { flags: 'a' })
+  _write(chunk: any, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    this.byteSize += (chunk as Buffer).length
+    if (this.isFirstRow && this.splitWorksheet === true && this.args.rangeIncludesHeader === true) {
+      const outputFilePathClone = omit(clone(this.args.outputFile!), ['base'])
+      outputFilePathClone.name += `_HEADER`
+
+      const formattedFilePath = format(outputFilePathClone)
+      fs.writeFile(formattedFilePath, `${chunk}`, 'utf-8', (err) => {
+        if (err) {
+          spinner.error(`There was an error writing the CSV file header: ${colors.red(err.message)}`)
+          process.exit(1)
+        }
+        else {
+          const summaryPath = format(omit(outputFilePathClone, ['dir']))
+          this.outputFiles.push(summaryPath)
+          spinner.text = `Writing header to ${colors.cyan(`"${summaryPath}"`)}\n`
+          this.incrementRowCount()
+        }
+      })
     }
-    this.fileStream.write(chunk, encoding, callback)
+    else {
+      if (this.splitWorksheet === true && this.byteSize > (this.maxSize ?? 0)) {
+        this.fileStream.end()
+        this.byteSize = (chunk as Buffer).length
+        this.incrementFileCount()
+        this.fileStream = fs.createWriteStream(this.filePath, { flags: 'a' })
+      }
+      this.fileStream.write(`${chunk}\n`, encoding, callback)
+      this.incrementRowCount()
+    }
+  }
+
+  writeRow(): void {
+    const rowData = this.rowData
+    if (this.isFirstRow) {
+      rowData.push('source_file', 'source_sheet', 'source_range')
+    }
+    else {
+      rowData.push(this.args.parsedFile!.base, this.args.sheetName!, this.args.range!)
+    }
+    this.rowData = rowData
+    this.write(Buffer.from(Papa.unparse([this.rowData])))
+  }
+
+  get filePath(): string {
+    const outputFilePathClone = omit(clone(this.args.outputFile!), ['base'])
+    if (this.args.splitWorksheet === true) {
+      outputFilePathClone.name = `${outputFilePathClone?.name}_${this.args.fileNum}`
+      return format(outputFilePathClone)
+    }
+    else {
+      return format(outputFilePathClone)
+    }
+  }
+
+  get splitWorksheet(): SplitWorksheet {
+    return this.args.splitWorksheet
+  }
+
+  set splitWorksheet(val: SplitWorksheet) {
+    this.args.splitWorksheet = val
+  }
+
+  get isLastRow(): boolean {
+    return this._isLastRow ?? false
+  }
+
+  set isLastRow(val: boolean) {
+    this._isLastRow = val
+  }
+
+  get isFirstRow(): boolean {
+    return this._isFirstRow ?? false
+  }
+
+  set isFirstRow(val: boolean) {
+    this._isFirstRow = val
+  }
+
+  get rowData(): JsonPrimitive[] {
+    return this._currentRowData
+  }
+
+  set rowData(val: JsonPrimitive[]) {
+    this._currentRowData = val
+  }
+
+  incrementFileCount(): void {
+    this.args.fileNum! += 1
+  }
+
+  incrementRowCount(): void {
+    this.args.rowCount! += 1
   }
 
   getByteSize(): number {
@@ -55,8 +160,8 @@ class SizeTrackingWritable extends Writable {
   }
 }
 
-export interface Arguments {
-  args: Pick<Arguments, 'filePath' | 'sheetName' | 'range'>
+export interface Arguments<T> {
+  args?: Pick<Arguments<T>, 'filePath' | 'sheetName' | 'range'>
   bytesWritten?: number
   columnIndices?: Generator<number>
   csvFileSize?: number
@@ -66,7 +171,9 @@ export interface Arguments {
   fileNum?: number
   filePath?: string
   isLastRow?: boolean
+  outputFile?: ParsedPath
   outputFilePath?: string
+  outputFileName?: string
   outputFileDir?: string
   outputFiles?: string[]
   parsedFile?: ParsedPath
@@ -75,15 +182,17 @@ export interface Arguments {
   rangeIncludesHeader?: boolean
   rawSheet?: XLSX.WorkSheet
   rowCount?: number
-  rowData?: JsonPrimitive[]
   rowIndices?: Generator<number>
   sheetName?: string
   headerRow?: string[]
-  Sheets: { [sheet: string]: XLSX.WorkSheet }
-  splitWorksheet?: boolean
-  writeStream?: SizeTrackingWritable | Writable
+  Sheets?: { [sheet: string]: XLSX.WorkSheet }
+  splitWorksheet?: T
 }
-export async function parseArguments(args: Arguments): Promise<void> {
+export async function parseArguments(inputArgs: Pick<Arguments<boolean>, 'filePath' | 'range' | 'sheetName'>): Promise<void> {
+  const args: Arguments<boolean> = {
+    ...inputArgs,
+    splitWorksheet: false,
+  }
   if (isUndefined(args.filePath)) {
     await getExcelFilePath(args)
     spinner.text = `Parsing ${colors.cyan(`"${buildFilePath(args, args.filePath!)}"`)}\n`
@@ -92,6 +201,9 @@ export async function parseArguments(args: Arguments): Promise<void> {
     spinner.text = `Parsing ${colors.cyan(`"${args.filePath}"`)}...\n`
   }
   args.parsedFile = parse(args.filePath!)
+  args.outputFile = parse(args.filePath!)
+  args.outputFile.ext = '.csv'
+
   const { SheetNames, Sheets } = XLSX.readFile(args.filePath!, {
     raw: true,
     cellDates: true,
@@ -99,6 +211,7 @@ export async function parseArguments(args: Arguments): Promise<void> {
   })
   args.rowCount = 0
   args.Sheets = Sheets
+  args.fileNum = 1
 
   if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
     args.sheetName = await chooseSheetToParse({ SheetNames })
@@ -117,35 +230,35 @@ export async function parseArguments(args: Arguments): Promise<void> {
   const firstDataRowIndex = args.decodedRange.s.r + (args.rangeIncludesHeader ? 1 : 0)
   const firstDataRow = []
   args.headerRow = []
-  for (const colIdx of args.columnIndices) {
+  for (const colIdx of range(args.decodedRange.s.c, args.decodedRange.e.c + 1)) {
     if (args.rangeIncludesHeader) {
-      args.headerRow.push((args.rawSheet?.['!data']?.[args.decodedRange.s.r]?.[colIdx].v ?? '') as string)
+      const cellValue = get(args.rawSheet, `!data[${args.decodedRange.s.r}][${colIdx}].v`, '')
+      args.headerRow.push(cellValue)
     }
-    const currentCell = args.rawSheet['!data']?.[firstDataRowIndex]?.[colIdx].v ?? null
-    firstDataRow.push((currentCell) as string)
+    const currentCell = get(args.rawSheet, `!data[${firstDataRowIndex}][${colIdx}].v`, null)
+    firstDataRow.push(currentCell)
   }
   if (args.rangeIncludesHeader) {
     args.headerRow.push('source_file', 'source_sheet', 'source_range')
   }
-  firstDataRow.push(args.parsedFile.base, args.sheetName, args.range!)
+  firstDataRow.push(args.parsedFile.base, args.sheetName, args.range)
   const headerRowString = Papa.unparse([args.headerRow])
   const firstDataRowString = Papa.unparse([firstDataRow])
-  args.outputFiles = []
-  args.csvFileSize = (Buffer.from(firstDataRowString).length * (args.decodedRange.e.r - args.decodedRange.s.r + 1)) + (Buffer.from(headerRowString).length)
-  args.csvSizeInMb = args.csvFileSize * 1.5 / (1024 * 1024)
-  args.splitWorksheet = false
-  args.outputFileDir = join(args.parsedFile.dir)
-  args.outputFilePath = join(args.outputFileDir, `${snake(`${args.parsedFile.name} ${args.sheetName}`, { splitOnNumber: true })}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`)
+  const outputFiles: string[] = []
+  let csvFileSize = (Buffer.from(firstDataRowString).length * (args.decodedRange.e.r - args.decodedRange.s.r + 1)) + (Buffer.from(headerRowString).length)
+  args.csvSizeInMb = csvFileSize * 1.5 / (1024 * 1024)
+  let splitWorksheet = false
+  args.outputFile.name = `${snake(`${args.parsedFile.name} ${args.sheetName}`, { splitOnNumber: true })}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`
   if (args.csvSizeInMb > 5) {
-    args.splitWorksheet = await confirm({
-      message: `The size of the resulting CSV file could exceed ${colors.yellow(`${args.csvSizeInMb * 4}Mb`)}. Would you like to split the output into multiple CSVs?`,
+    splitWorksheet = await confirm({
+      message: `The size of the resulting CSV file could exceed ${colors.yellow(`${ceil(args.csvSizeInMb)}Mb`)}. Would you like to split the output into multiple CSVs?`,
       default: false,
     })
-    if (args.splitWorksheet) {
-      args.outputFileDir = join(args.parsedFile.dir, `PARSE ${dayjs().format('YYYY.MM.DD HH.mm.ss')}`)
-      ensureDirSync(args.outputFileDir)
-      emptyDirSync(args.outputFileDir)
-      args.outputFilePath = join(args.outputFileDir, `${args.parsedFile.name} ${args.sheetName}`)
+    if (splitWorksheet) {
+      args.outputFile.dir = join(args.parsedFile.dir, `PARSE ${dayjs().format('YYYY.MM.DD HH.mm.ss')}`)
+      ensureDirSync(args.outputFile.dir)
+      emptyDirSync(args.outputFile.dir)
+      args.outputFile.name = `${args.parsedFile.name} ${args.sheetName}`
       const tempCSVSize = await number({
         message: 'Size of output CSV files (in Mb):',
         default: 5,
@@ -158,48 +271,25 @@ export async function parseArguments(args: Arguments): Promise<void> {
           },
         },
       })
-      args.csvFileSize = tempCSVSize! * 1024 * 1024
+      csvFileSize = tempCSVSize! * 1024 * 1024
     }
   }
-  args.fileNum = 1
-  if (args.splitWorksheet) {
-    if (args.rangeIncludesHeader) {
-      const headerFilePath = `${args.outputFilePath}_HEADER.csv`
-      args.outputFiles.push(headerFilePath)
-      fs.writeFile(headerFilePath, headerRowString, 'utf-8', (err) => {
-        if (err) {
-          spinner.error(`There was an error writing the CSV file header: ${colors.red(err.message)}`)
-          process.exit(1)
-        }
-        else {
-          spinner.text = `Writing header to ${colors.cyan(`"${headerFilePath}"`)}\n`
-        }
-      })
-    }
-
-    args.writeStream = new SizeTrackingWritable(`${args.outputFilePath}_${args.fileNum}.csv`, args.csvFileSize)
-  }
-  else {
-    args.writeStream = fs.createWriteStream(`${args.outputFilePath}.csv`, 'utf-8')
-    if (args.rangeIncludesHeader) {
-      args.writeStream.write(Buffer.from(`${headerRowString}\n`))
-    }
-  }
-  args.rowData = []
-  for (const rowIdx of args.rowIndices) {
-    args.isLastRow = rowIdx === args.decodedRange.e.r
-    if (rowIdx === args.decodedRange.s.r) {
-      return
-    }
-    const rowdata: JsonValue[] = []
-    for (const colIdx of args.columnIndices) {
+  const writeStream = new SizeTrackingWritable({
+    ...args,
+    splitWorksheet,
+    csvFileSize,
+    outputFiles,
+  })
+  for (const rowIdx of range(args.decodedRange.s.r, args.decodedRange.e.r + 1)) {
+    writeStream.isLastRow = rowIdx === args.decodedRange.e.r
+    writeStream.isFirstRow = rowIdx === args.decodedRange.s.r
+    const rowData = []
+    for (const colIdx of range(args.decodedRange.s.c, args.decodedRange.e.c + 1)) {
       const currentCell = args.rawSheet['!data']?.[rowIdx]?.[colIdx]
-      rowdata.push((currentCell?.v ?? null) as string)
+      rowData.push((currentCell?.v ?? null) as string)
     }
-
-    rowdata.push(args.parsedFile.base, args.sheetName, args.range!)
-    const rowString = Papa.unparse([rowdata])
-    args.writeStream.write(Buffer.from(`${rowString}\n`))
+    writeStream.rowData = rowData
+    writeStream.writeRow()
   }
 }
 
@@ -294,7 +384,7 @@ function finishParsing(args: Arguments): void {
 
 async function getWorksheetRange(args: Arguments): Promise<void> {
   const worksheetRange = args.Sheets[args.sheetName!]['!ref']
-  const parsedRange = XLSX.utils.decode_range(worksheetRange!)
+  const parsedRange = XLSX.utils.decode_range(worksheetRange)
   const isRowInRange = (input: number): boolean => inRange(input, parsedRange.s.r, parsedRange.e.r + 1)
   const isColumnInRange = (input: number): boolean => inRange(input, parsedRange.s.c, parsedRange.e.c + 1)
   const isRangeInDefaultRange = (r: XLSX.Range): boolean => isRowInRange(r.s.r) && isColumnInRange(r.s.c) && isRowInRange(r.e.r) && isColumnInRange(r.e.c)
