@@ -152,20 +152,14 @@ class SizeTrackingWritable extends Writable {
         // ensureDirSync(this.outputFile.dir)
         this._fileStream = this.makeFileStream()
         this.byteSize = 0
-        this.byteSize += buff.length
-        this._fileStream.write(rowString)
       }
       else if (this._splitWorksheet && (this.byteSize + buff.length) > this.maxSize) {
         this._fileStream.end(rowString)
         this._fileStream = this.makeFileStream()
         this.byteSize = 0
-        this.byteSize += buff.length
-        this._fileStream.write(rowString)
       }
-      else {
-        this.byteSize += buff.length
-        this._fileStream.write(rowString)
-      }
+      this.byteSize += buff.length
+      this._fileStream.write(rowString)
     }
   }
 
@@ -174,6 +168,11 @@ class SizeTrackingWritable extends Writable {
     const currentOutputFile = this.outputFile
 
     const _fileStream = fs.createWriteStream(format(currentOutputFile))
+    this._outputFiles.push({
+      file: currentOutputFile,
+      size: undefined,
+      stream: _fileStream,
+    })
     _fileStream.on('error', (err) => {
       this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
     })
@@ -183,11 +182,6 @@ class SizeTrackingWritable extends Writable {
         this._outputFiles[outputFileEntryIndex].size = _fileStream.bytesWritten
         this.spinner.text = `Finished writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}`
       }
-    })
-    this._outputFiles.push({
-      file: currentOutputFile,
-      size: undefined,
-      stream: _fileStream,
     })
     this.spinner.text = `Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n`
     this.spinner.start()
