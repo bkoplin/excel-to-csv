@@ -15,7 +15,7 @@ export default antfu(
         allowAllPropertiesOnSameLine: false,
         allowMultiplePropertiesPerLine: false,
       }],
-      'style/multiline-comment-style': ['error', 'bare-block'],
+      'style/multiline-comment-style': ['error', 'separate-lines'],
       'node/prefer-global/process': ['error', 'always'],
       'style/object-curly-newline': ['error', {
         multiline: true,

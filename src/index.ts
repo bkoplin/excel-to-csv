@@ -1,10 +1,10 @@
 import * as os from 'node:os'
 import * as fs from 'node:fs'
-import { basename, join, parse, relative, sep } from 'node:path'
+import { basename, format, join, parse, relative, sep } from 'node:path'
 import type { PassThrough } from 'node:stream'
 import { Writable } from 'node:stream'
 import type { ParsedPath } from 'node:path/posix'
-import * as Papa from 'papaparse'
+import Papa from 'papaparse'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
 import { counting, inRange, isEmpty, isString, omit, range } from 'radash'
@@ -15,6 +15,7 @@ import { Separator } from '@inquirer/core'
 import fg from 'fast-glob'
 import yoctoSpinner from 'yocto-spinner'
 import dayjs from 'dayjs'
+import { ensureDirSync } from 'fs-extra'
 
 XLSX.set_fs(fs)
 
@@ -58,12 +59,11 @@ class SizeTrackingWritable extends Writable {
   _currentRow: number = 0
   _currentRowData: JsonPrimitive[] = []
 
-  _fileNum: number = 1
+  _fileNum: number = 0
   _headerRow: string[] = []
   _isFirstRow: boolean = true
   _isLastRow: boolean = false
-  _outputFile?: ParsedPath
-  _outputFiles: string[] = []
+  _outputFiles: Omit<ParsedPath, 'base'>[] = []
   _inputFile?: ParsedPath
   _inputFilePath?: string
   _inputRange?: string
@@ -73,7 +73,8 @@ class SizeTrackingWritable extends Writable {
   _Sheets?: { [sheet: string]: XLSX.WorkSheet }
   _SheetNames?: string[]
   _splitWorksheet: boolean = false
-  spinner = yoctoSpinner({ text: 'Parsing…' })
+  formattedTimestamp: string = dayjs().format('YYYY.MM.DD HH.mm.ss')
+  spinner = yoctoSpinner()
 
   constructor(args: {
     filePath?: string
@@ -131,7 +132,49 @@ class SizeTrackingWritable extends Writable {
   // }
 
   private writeRow(rowData: JsonPrimitive[]): void {
-    const buff = Buffer.from(Papa.unparse([rowData]))
+    const rowString = Papa.unparse([rowData])
+    const buff = Buffer.from(rowString)
+
+    if (this.rowIsHeaderRow && this._splitWorksheet === true) {
+      fs.writeFileSync(format(this.outputFile), buff, 'utf-8')
+      this._outputFiles.push({
+        file: this.outputFile,
+        size: buff.length,
+      })
+    }
+    else {
+      if (!this.hasWriteStream()) {
+        // ensureDirSync(this.outputFile.dir)
+        this._fileStream = this.makeFileStream()
+        this.byteSize = 0
+      }
+      else if (this._splitWorksheet && (this.byteSize + buff.length) > this.maxSize) {
+        this._fileStream.end()
+        this._fileStream = this.makeFileStream()
+        this.byteSize = 0
+      }
+      this.byteSize += buff.length
+      this._fileStream!.write(buff)
+    }
+  }
+
+  private makeFileStream(): fs.WriteStream {
+    this.incrementFileCount()
+    const currentOutputFile = this.outputFile
+    const _fileStream = fs.createWriteStream(format(currentOutputFile))
+    _fileStream.on('error', (err) => {
+      this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+    })
+    _fileStream.on('finish', () => {
+      this._outputFiles.push({
+        file: currentOutputFile,
+        size: _fileStream.bytesWritten,
+      })
+      this.spinner.text = `Finished writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}`
+    })
+    this.spinner.text = `Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n`
+    this.spinner.start()
+    return _fileStream
   }
 
   get inputFile(): ParsedPath {
@@ -143,14 +186,27 @@ class SizeTrackingWritable extends Writable {
   }
 
   get outputFile(): Omit<ParsedPath, 'base'> {
-    const baseFileName = `${this.inputFile.name} ${this._inputSheetName}`
-    const formattedTimestamp = dayjs().format('YYYY.MM.DD HH.mm.ss')
+    let outputFileName = `${this.formattedTimestamp} SHEET ${this._inputSheetName}`
+
+    if (this._splitWorksheet === true) {
+      if (this.rowIsHeaderRow)
+        outputFileName += ' HEADER'
+      else
+        outputFileName += ` ${this._fileNum}`
+    }
+
+    const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
+    ensureDirSync(parsedJobDir)
     return {
       ...omit(parse(this._inputFilePath!), ['base']),
       ext: '.csv',
-      name: this._splitWorksheet === true ? `${baseFileName} ${this._fileNum}` : `${baseFileName} ${formattedTimestamp}`,
-      dir: this._splitWorksheet === true ? join(this.inputFile.dir, `PARSE ${formattedTimestamp}`) : this.inputFile.dir,
+      name: outputFileName,
+      dir: parsedJobDir,
     }
+  }
+
+  get relativeOuputFile(): string {
+    return relative(this.inputFile.dir, format(this.outputFile))
   }
 
   iterate() {
@@ -249,6 +305,10 @@ class SizeTrackingWritable extends Writable {
     return this.byteSize
   }
 
+  hasWriteStream(): this is Merge<this, SetRequired<SizeTrackingWritable, '_fileStream'>> {
+    return this._fileStream !== undefined
+  }
+
   hasInputFilePath(): this is Merge<this, SetRequired<SizeTrackingWritable, '_inputFilePath'>> {
     return this._inputFilePath !== undefined
   }
@@ -280,6 +340,7 @@ class SizeTrackingWritable extends Writable {
       }
       else {
         this.spinner.text = `Parsing ${colors.cyan(`"${this._inputFilePath}"`)}...\n`
+        this.spinner.start()
       }
     }
     else {
@@ -340,6 +401,7 @@ class SizeTrackingWritable extends Writable {
       this._inputFilePath = filePath!
       // this.spinner.start()
       this.spinner.text = `Parsing ${colors.cyan(`"${buildFilePath(dirName, filePath!)}"`)}\n`
+      this.spinner.start()
     }
   }
 
@@ -447,9 +509,11 @@ class SizeTrackingWritable extends Writable {
       })
       this._Sheets = Sheets
       this._SheetNames = SheetNames
+      this.spinner.success(`Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`)
       return true
     }
     else {
+      this.spinner.success(`Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`)
       return true
     }
   }
