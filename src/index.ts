@@ -132,7 +132,7 @@ class SizeTrackingWritable extends Writable {
   // }
 
   private writeRow(rowData: JsonPrimitive[]): void {
-    const rowString = Papa.unparse([rowData])
+    const rowString = `${Papa.unparse([rowData])}\n`
     const buff = Buffer.from(rowString)
 
     if (this.rowIsHeaderRow && this._splitWorksheet === true) {
@@ -149,12 +149,12 @@ class SizeTrackingWritable extends Writable {
         this.byteSize = 0
       }
       else if (this._splitWorksheet && (this.byteSize + buff.length) > this.maxSize) {
-        this._fileStream.end()
+        this._fileStream.end(rowString)
         this._fileStream = this.makeFileStream()
         this.byteSize = 0
       }
       this.byteSize += buff.length
-      this._fileStream!.write(buff)
+      this._fileStream!.write(rowString)
     }
   }
 
@@ -193,6 +193,9 @@ class SizeTrackingWritable extends Writable {
         outputFileName += ' HEADER'
       else
         outputFileName += ` ${this._fileNum}`
+    }
+    else {
+      outputFileName += ' FULL'
     }
 
     const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
