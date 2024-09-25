@@ -63,7 +63,12 @@ class SizeTrackingWritable extends Writable {
   _headerRow: string[] = []
   _isFirstRow: boolean = true
   _isLastRow: boolean = false
-  _outputFiles: Omit<ParsedPath, 'base'>[] = []
+  _outputFiles: {
+    file: Omit<ParsedPath, 'base'>
+    size?: number
+    stream?: fs.WriteStream
+  }[] = []
+
   _inputFile?: ParsedPath
   _inputFilePath?: string
   _inputRange?: string
@@ -147,30 +152,42 @@ class SizeTrackingWritable extends Writable {
         // ensureDirSync(this.outputFile.dir)
         this._fileStream = this.makeFileStream()
         this.byteSize = 0
+        this.byteSize += buff.length
+        this._fileStream.write(rowString)
       }
       else if (this._splitWorksheet && (this.byteSize + buff.length) > this.maxSize) {
         this._fileStream.end(rowString)
         this._fileStream = this.makeFileStream()
         this.byteSize = 0
+        this.byteSize += buff.length
+        this._fileStream.write(rowString)
       }
-      this.byteSize += buff.length
-      this._fileStream!.write(rowString)
+      else {
+        this.byteSize += buff.length
+        this._fileStream.write(rowString)
+      }
     }
   }
 
   private makeFileStream(): fs.WriteStream {
     this.incrementFileCount()
     const currentOutputFile = this.outputFile
+
     const _fileStream = fs.createWriteStream(format(currentOutputFile))
     _fileStream.on('error', (err) => {
       this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
     })
     _fileStream.on('finish', () => {
-      this._outputFiles.push({
-        file: currentOutputFile,
-        size: _fileStream.bytesWritten,
-      })
-      this.spinner.text = `Finished writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}`
+      const outputFileEntryIndex = this._outputFiles.findIndex(({ file }) => file.name === currentOutputFile.name)
+      if (outputFileEntryIndex > -1) {
+        this._outputFiles[outputFileEntryIndex].size = _fileStream.bytesWritten
+        this.spinner.text = `Finished writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}`
+      }
+    })
+    this._outputFiles.push({
+      file: currentOutputFile,
+      size: undefined,
+      stream: _fileStream,
     })
     this.spinner.text = `Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n`
     this.spinner.start()
