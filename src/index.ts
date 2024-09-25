@@ -19,6 +19,7 @@ import { emptyDirSync, ensureDirSync } from 'fs-extra'
 import fg from 'fast-glob'
 import { isUndefined } from '@antfu/utils'
 import yoctoSpinner from 'yocto-spinner'
+import { counting } from 'radash'
 
 XLSX.set_fs(fs)
 
