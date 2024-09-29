@@ -50,6 +50,9 @@ importers:
       radash:
         specifier: ^12.1.0
         version: 12.1.0
+      rxjs:
+        specifier: ^7.8.1
+        version: 7.8.1
       simple-git-hooks:
         specifier: ^2.11.1
         version: 2.11.1
@@ -3561,6 +3564,9 @@ packages:
     resolution: {integrity: sha512-CBPzeX6JQZUdhZpSFyNt2vUk44ivKMWZYCNBYoZYEE46mL9nf6WyMP3320WnzIrJuo89+njiUvlo83jUEXjXLg==}
     engines: {node: '>=v0.9.0'}
     hasBin: true
+
+  rxjs@7.8.1:
+    resolution: {integrity: sha512-AA3TVj+0A2iuIoQkWEK/tqFjBq2j+6PO6Y0zJcvzLAFhEFIO3HL0vls9hWLncZbAAbK0mar7oZ4V079I/qPMxg==}
 
   safe-buffer@5.1.2:
     resolution: {integrity: sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g==}
@@ -7797,6 +7803,10 @@ snapshots:
   run@1.5.0:
     dependencies:
       minimatch: 10.0.1
+
+  rxjs@7.8.1:
+    dependencies:
+      tslib: 2.7.0
 
   safe-buffer@5.1.2: {}
 

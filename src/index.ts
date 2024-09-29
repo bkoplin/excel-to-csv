@@ -1,23 +1,24 @@
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import { basename, format, join, parse, relative, sep } from 'node:path'
-import { PassThrough, Writable } from 'node:stream'
+import type { PassThrough } from 'node:stream'
+import { Writable } from 'node:stream'
 import type { ParsedPath } from 'node:path/posix'
-import type { ReadLine } from 'node:readline'
-import readline from 'node:readline'
 import Papa from 'papaparse'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
-import { counting, inRange, isEmpty, isString, omit, range } from 'radash'
+import { clone, counting, inRange, isEmpty, isString, omit, range } from 'radash'
 import type { JsonPrimitive, Merge, SetRequired } from 'type-fest'
 import colors from 'picocolors'
 import { confirm, expand, input, number, select } from '@inquirer/prompts'
 import { Separator } from '@inquirer/core'
 import fg from 'fast-glob'
+import type { Spinner } from 'yocto-spinner'
 import yoctoSpinner from 'yocto-spinner'
 import dayjs from 'dayjs'
 import { ensureDirSync } from 'fs-extra'
 import { round } from 'lodash-es'
+import { Subject, last, reduce } from 'rxjs'
 
 XLSX.set_fs(fs)
 
@@ -48,14 +49,105 @@ export interface Arguments<T extends boolean = false> {
   Sheets?: { [sheet: string]: XLSX.WorkSheet }
   splitWorksheet?: T
 }
-
 class SizeTrackingWritable extends Writable {
   private byteSize: number = 0
   private maxSize: number = 0
+  writer$ = new Subject<string>()
 
-  _outputStream?: fs.WriteStream
-  _inputStream = new PassThrough()
-  _lineStream: ReadLine
+  outputFiles$ = this.writer$.pipe(
+    reduce<string, {
+      file: Omit<ParsedPath, 'base'>
+      size: number
+      stream: fs.WriteStream
+      isHeaderFile: boolean
+      writeResult: boolean
+      fileNum: number
+    }[]>((files, curr, rowIndex) => {
+      const outputFileName = `${this.formattedTimestamp} SHEET ${this._inputSheetName}`
+      const isHeader = rowIndex === 0 && this._rangeIncludesHeader === true
+      // if (this._splitWorksheet === true) {
+      //   if (isHeader)
+      //     outputFileName += ' HEADER'
+      //   else
+      //     outputFileName += ` ${files.length}`
+      // }
+      // else {
+      //   outputFileName += ' FULL'
+      // }
+
+      const inputFileObject = omit(parse(this._inputFilePath!), ['base'])
+      if (isHeader && this._splitWorksheet) {
+        const outputFileObject = clone(inputFileObject)
+        outputFileObject.ext = '.csv'
+        outputFileObject.name = `${outputFileName} HEADER`
+        outputFileObject.dir = join(inputFileObject.dir, `${inputFileObject.name} PARSE JOBS`)
+        const outputFile = fs.createWriteStream(format(outputFileObject), 'utf-8')
+
+        files.push({
+          file: outputFileObject,
+          size: Buffer.from(curr).length,
+          stream: outputFile,
+          isHeaderFile: true,
+          writeResult: outputFile.write(curr),
+          fileNum: 0,
+        })
+      }
+      else {
+        const byteSize = Buffer.from(`${curr}\n`).length
+        const last = files[files.length - 1]
+        if (!last.isHeaderFile && (byteSize + last.size) < this.maxSize) {
+          last.writeResult = last.stream.write(`${curr}\n`)
+          last.size += byteSize
+        }
+        else {
+          const outputFileObject = clone(inputFileObject)
+          outputFileObject.ext = '.csv'
+          outputFileObject.name = `${outputFileName} ${last.fileNum + 1}`
+          outputFileObject.dir = join(inputFileObject.dir, `${inputFileObject.name} PARSE JOBS`)
+          if (!last.writeResult) {
+            last.stream.once('drain', () => {
+              last.stream.end()
+            })
+          }
+          else {
+            last.stream.end()
+          }
+          const stream = fs.createWriteStream(format(outputFileObject), 'utf-8')
+          const nextFile = {
+            file: outputFileObject,
+            size: byteSize,
+            stream,
+            isHeaderFile: false,
+            writeResult: stream.write(`${curr}\n`),
+            fileNum: last.fileNum + 1,
+          }
+
+          this.spinnerObservable.next({ text: `Writing ${colors.cyan(`"${format(nextFile.file)}"`)}\n` })
+          nextFile.stream.on('error', (err) => {
+            this.spinner = this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+          })
+          nextFile.stream.on('finish', () => {
+            // this._outputFiles.push({
+            //   file: currentOutputFile,
+            //   size: stream.bytesWritten,
+            // })
+            // this.finalFiles$.next(nextFile)
+            this.spinnerObservable.next({
+              text: `Finished writing ${colors.yellow(`${round(nextFile.size / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${format(nextFile.file)}`)}\n`,
+              method: 'success',
+            })
+          })
+          // stream.on('ready', () => {
+
+          files.push(nextFile)
+        }
+      }
+      return files
+    }, []),
+  )
+
+  finalFiles$ = this.outputFiles$.pipe(last())
+
   _bytesWritten: number = 0
   _csvFileSize: number = 5 * 1024 * 1024
   _csvSizeInMb: number = 5
@@ -68,7 +160,7 @@ class SizeTrackingWritable extends Writable {
   _isLastRow: boolean = false
   _outputFiles: {
     file: Omit<ParsedPath, 'base'>
-    size?: number
+    size: number
   }[] = []
 
   _inputFile?: ParsedPath
@@ -82,6 +174,11 @@ class SizeTrackingWritable extends Writable {
   _SheetNames?: string[]
   _splitWorksheet: boolean = false
   formattedTimestamp: string = dayjs().format('YYYY.MM.DD HH.mm.ss')
+  spinnerObservable = new Subject<{
+    text: string
+    method?: keyof Spinner
+  }>()
+
   spinner = yoctoSpinner()
 
   constructor(args: {
@@ -90,52 +187,18 @@ class SizeTrackingWritable extends Writable {
     sheetName?: string
   }) {
     super()
-
     this._inputFilePath = args.filePath
-
     this._inputRange = args.range
-
     this._inputSheetName = args.sheetName
-    this._lineStream = readline.createInterface({
-      input: this._inputStream,
-    })
-
-    this._lineStream.on('line', (line) => {
-      this._lineStream.pause()
-      const buff = Buffer.from(`${line}\n`)
-      if (this.isSeparateHeaderRow) {
-        fs.writeFileSync(format(this.outputFile), buff, 'utf-8')
-        this._outputFiles.push({
-          file: this.outputFile,
-          size: buff.length,
-        })
-        this.incrementReadRowCount()
-        this._lineStream.resume()
-      }
-      else {
-        this.incrementWriteRowCount()
-        this.incrementReadRowCount()
-        this.byteSize += buff.length
-
-        if (!this.hasWriteStream()) {
-          this._outputStream = this.makeFileStream()
-          this.byteSize = 0
+    this.spinnerObservable.subscribe({
+      next: ({ text, method = 'start' }) => {
+        if (typeof method !== 'undefined' && method in this.spinner && typeof this.spinner[method] === 'function') {
+          this.spinner[method](text)
         }
-        if (this._splitWorksheet && this.byteSize > this.maxSize) {
-          this._outputStream!.end()
-          this.byteSize = buff.length
-          this._outputStream = this.makeFileStream()
+        else {
+          this.spinner.start(text)
         }
-
-        const isWriteSuccessful = this._inputStream.closed ? this._outputStream!.end(buff) : this._outputStream!.write(buff)
-        if (typeof isWriteSuccessful === 'boolean' && isWriteSuccessful) {
-          process.nextTick(() => this._lineStream.resume())
-        }
-      }
-    })
-    this._lineStream.on('close', () => {
-      this._outputStream?.end()
-      this.finishParsing()
+      },
     })
   }
 
@@ -159,36 +222,33 @@ class SizeTrackingWritable extends Writable {
     else {
       successMessage += `\n\n${colors.yellow('NOTE: The header row was not included in the output. You will have to copy it from the source file into the Data Loader.\n\n')}`
     }
-    this.spinner = this.spinner.start()
-    this.spinner = this.spinner.success(
-      successMessage,
-    )
+    this.spinnerObservable.next({
+      text: successMessage,
+      method: 'success',
+    })
   }
 
   private makeFileStream(): fs.WriteStream {
-    this._lineStream.pause()
     this.incrementFileCount()
     const currentOutputFile = this.outputFile
     const _fileStream = fs.createWriteStream(format(currentOutputFile))
 
     _fileStream.on('close', () => {
-      this._outputFiles.push({
-        file: currentOutputFile,
-        size: _fileStream.bytesWritten,
+      // this._outputFiles.push({
+      //   file: currentOutputFile,
+      //   size: _fileStream.bytesWritten,
+      // })
+      this.spinnerObservable.next({
+        text: `Finished writing ${colors.yellow(`${round(_fileStream.bytesWritten / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}`)}\n`,
+        method: 'success',
       })
-      this.spinner = this.spinner.start()
-      this.spinner = this.spinner.success(`Finished writing ${colors.yellow(`${round(_fileStream.bytesWritten / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}`)}\n`)
     })
     _fileStream.on('error', (err) => {
       this.spinner = this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
     })
-    _fileStream.on('drain', () => {
-      this._lineStream.resume()
-    })
-    _fileStream.on('ready', () => {
-      this.spinner = this.spinner.start(`Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n`)
-      this._lineStream.resume()
-    })
+    // _fileStream.on('ready', () => {
+    this.spinnerObservable.next({ text: `Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n` })
+    // })
 
     return _fileStream
   }
@@ -252,8 +312,9 @@ class SizeTrackingWritable extends Writable {
       }
       const rowData = this.processRowData(unprocessedRowData)
       this._rowData.push(rowData)
+      this.writer$.next(Papa.unparse([rowData]))
     }
-    this._inputStream.push(Papa.unparse(this._rowData))
+    this.writer$.complete()
   }
 
   private processRowData(rowData: JsonPrimitive[]): JsonPrimitive[] {
@@ -337,12 +398,15 @@ class SizeTrackingWritable extends Writable {
   async setInputFile(): Promise<void> {
     if (this.hasInputFilePath()) {
       if (!fs.existsSync(this._inputFilePath)) {
-        this.spinner = this.spinner.error(colors.red(`FILE ${colors.cyan(`"${this._inputFilePath}"`)} NOT FOUND\n`))
+        this.spinnerObservable.next({
+          text: colors.red(`FILE ${colors.cyan(`"${this._inputFilePath}"`)} NOT FOUND\n`),
+          method: 'error',
+        })
         this._inputFilePath = undefined as unknown as string
         await this.setInputFile()
       }
       else {
-        this.spinner = this.spinner.start(`Parsing ${colors.cyan(`"${this._inputFilePath}"`)}...\n`)
+        this.spinnerObservable.next({ text: `Parsing ${colors.cyan(`"${this._inputFilePath}"`)}...\n` })
       }
     }
     else {
@@ -397,12 +461,18 @@ class SizeTrackingWritable extends Writable {
         }
       })
       if (filePath === 'canceled') {
-        this.spinner = this.spinner.error(`Cancelled selection`)
-        process.exit(1)
+        this.spinnerObservable.next({
+          text: `Cancelled selection`,
+          method: 'error',
+        })
+        setTimeout(() => {
+          process.exit(1)
+        }, 1500)
       }
       this._inputFilePath = filePath!
-
-      this.spinner = this.spinner.start(`Parsing ${colors.cyan(`"${buildFilePath(dirName, filePath!)}"`)}\n`)
+      const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
+      ensureDirSync(parsedJobDir)
+      this.spinnerObservable.next({ text: `Parsing ${colors.cyan(`"${buildFilePath(dirName, filePath!)}"`)}\n` })
     }
   }
 
@@ -509,11 +579,17 @@ class SizeTrackingWritable extends Writable {
       })
       this._Sheets = Sheets
       this._SheetNames = SheetNames
-      this.spinner = this.spinner.success(`Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`)
+      this.spinnerObservable.next({
+        text: `Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`,
+        method: 'success',
+      })
       return true
     }
     else {
-      this.spinner = this.spinner.success(`Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`)
+      this.spinnerObservable.next({
+        text: `Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`,
+        method: 'success',
+      })
       return true
     }
   }
@@ -572,6 +648,17 @@ export async function parseArguments(inputArgs: Pick<Arguments<boolean>, 'filePa
     await streamer.setRangeIncludesHeader()
   }
   await streamer.setSplitWorksheet()
+  streamer.finalFiles$.subscribe({
+    next: (files) => {
+      streamer.finishParsing()
+    },
+    error: (err) => {
+      streamer.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+    },
+    complete: () => {
+      streamer.spinner.stop()
+    },
+  })
   streamer.iterate()
 }
 
