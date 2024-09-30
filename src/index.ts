@@ -18,7 +18,7 @@ import yoctoSpinner from 'yocto-spinner'
 import dayjs from 'dayjs'
 import { ensureDirSync } from 'fs-extra'
 import { round } from 'lodash-es'
-import { Subject, last, reduce } from 'rxjs'
+import { Subject, last, reduce, tap } from 'rxjs'
 
 XLSX.set_fs(fs)
 
@@ -62,6 +62,7 @@ class SizeTrackingWritable extends Writable {
       isHeaderFile: boolean
       writeResult: boolean
       fileNum: number
+      rows: number
     }[]>((files, curr, rowIndex) => {
       const outputFileName = `${this.formattedTimestamp} SHEET ${this._inputSheetName}`
       const isHeader = rowIndex === 0 && this._rangeIncludesHeader === true
@@ -90,6 +91,7 @@ class SizeTrackingWritable extends Writable {
           isHeaderFile: true,
           writeResult: outputFile.write(curr),
           fileNum: 0,
+          rows: 1,
         })
       }
       else {
@@ -98,6 +100,7 @@ class SizeTrackingWritable extends Writable {
         if (!last.isHeaderFile && (byteSize + last.size) < this.maxSize) {
           last.writeResult = last.stream.write(`${curr}\n`)
           last.size += byteSize
+          last.rows += 1
         }
         else {
           const outputFileObject = clone(inputFileObject)
@@ -120,23 +123,14 @@ class SizeTrackingWritable extends Writable {
             isHeaderFile: false,
             writeResult: stream.write(`${curr}\n`),
             fileNum: last.fileNum + 1,
+            rows: 1,
           }
 
           this.spinnerObservable.next({ text: `Writing ${colors.cyan(`"${format(nextFile.file)}"`)}\n` })
           nextFile.stream.on('error', (err) => {
             this.spinner = this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
           })
-          nextFile.stream.on('finish', () => {
-            // this._outputFiles.push({
-            //   file: currentOutputFile,
-            //   size: stream.bytesWritten,
-            // })
-            // this.finalFiles$.next(nextFile)
-            this.spinnerObservable.next({
-              text: `Finished writing ${colors.yellow(`${round(nextFile.size / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${format(nextFile.file)}`)}\n`,
-              method: 'success',
-            })
-          })
+
           // stream.on('ready', () => {
 
           files.push(nextFile)
@@ -146,7 +140,12 @@ class SizeTrackingWritable extends Writable {
     }, []),
   )
 
-  finalFiles$ = this.outputFiles$.pipe(last())
+  finalFiles$ = this.outputFiles$.pipe(
+    tap((files) => {
+      files
+    }),
+    last(),
+  )
 
   _bytesWritten: number = 0
   _csvFileSize: number = 5 * 1024 * 1024
@@ -650,6 +649,17 @@ export async function parseArguments(inputArgs: Pick<Arguments<boolean>, 'filePa
   await streamer.setSplitWorksheet()
   streamer.finalFiles$.subscribe({
     next: (files) => {
+      // files.forEach((file) => {
+      //   file.stream.on('finish', () => {
+      //     // this._outputFiles.push({
+      //     //   file: currentOutputFile,
+      //     //   size: stream.bytesWritten,
+      //     // })
+      //     // this.finalFiles$.next(nextFile)
+      //     streamer.spinner = yoctoSpinner()
+      //     streamer.spinner.text = `Finished writing ${colors.yellow(`${round(file.size / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${format(file.file)}`)}\n`
+      //   })
+      // })
       streamer.finishParsing()
     },
     error: (err) => {
