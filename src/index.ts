@@ -1,7 +1,7 @@
 import * as os from 'node:os'
 import * as fs from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { basename, format, join, parse, relative, sep } from 'node:path'
-import type { PassThrough } from 'node:stream'
 import { Writable } from 'node:stream'
 import type { ParsedPath } from 'node:path/posix'
 import Papa from 'papaparse'
@@ -13,12 +13,12 @@ import colors from 'picocolors'
 import { confirm, expand, input, number, select } from '@inquirer/prompts'
 import { Separator } from '@inquirer/core'
 import fg from 'fast-glob'
-import type { Spinner } from 'yocto-spinner'
-import yoctoSpinner from 'yocto-spinner'
+import type { Ora } from 'ora'
+import ora, { oraPromise } from 'ora'
 import dayjs from 'dayjs'
+import { Subject, map, mergeAll, of, reduce, toArray, withLatestFrom } from 'rxjs'
+import { padStart, round } from 'lodash-es'
 import { ensureDirSync } from 'fs-extra'
-import { round } from 'lodash-es'
-import { Subject, last, reduce, tap } from 'rxjs'
 
 XLSX.set_fs(fs)
 
@@ -38,7 +38,6 @@ export interface Arguments<T extends boolean = false> {
   outputFileDir?: string
   outputFiles?: string[]
   parsedFile?: ParsedPath
-  pass?: PassThrough
   range?: string
   rangeIncludesHeader?: boolean
   rawSheet?: XLSX.WorkSheet
@@ -52,99 +51,33 @@ export interface Arguments<T extends boolean = false> {
 class SizeTrackingWritable extends Writable {
   private byteSize: number = 0
   private maxSize: number = 0
-  writer$ = new Subject<string>()
-
-  outputFiles$ = this.writer$.pipe(
-    reduce<string, {
-      file: Omit<ParsedPath, 'base'>
-      size: number
-      stream: fs.WriteStream
-      isHeaderFile: boolean
-      writeResult: boolean
-      fileNum: number
-      rows: number
-    }[]>((files, curr, rowIndex) => {
-      const outputFileName = `${this.formattedTimestamp} SHEET ${this._inputSheetName}`
-      const isHeader = rowIndex === 0 && this._rangeIncludesHeader === true
-      // if (this._splitWorksheet === true) {
-      //   if (isHeader)
-      //     outputFileName += ' HEADER'
-      //   else
-      //     outputFileName += ` ${files.length}`
-      // }
-      // else {
-      //   outputFileName += ' FULL'
-      // }
-
-      const inputFileObject = omit(parse(this._inputFilePath!), ['base'])
-      if (isHeader && this._splitWorksheet) {
-        const outputFileObject = clone(inputFileObject)
-        outputFileObject.ext = '.csv'
-        outputFileObject.name = `${outputFileName} HEADER`
-        outputFileObject.dir = join(inputFileObject.dir, `${inputFileObject.name} PARSE JOBS`)
-        const outputFile = fs.createWriteStream(format(outputFileObject), 'utf-8')
-
-        files.push({
-          file: outputFileObject,
-          size: Buffer.from(curr).length,
-          stream: outputFile,
-          isHeaderFile: true,
-          writeResult: outputFile.write(curr),
-          fileNum: 0,
-          rows: 1,
+  reader$ = new Subject<string>()
+  transformer$ = this.reader$.pipe(
+    reduce((acc, curr, index) => {
+      const bufferedData = Buffer.from(`${curr}\n`)
+      const byteSize = bufferedData.length
+      const last = acc[acc.length - 1]
+      if (typeof last === 'undefined') {
+        acc.push({
+          buff: bufferedData,
+          isHeader: index === 0 && this._rangeIncludesHeader === true,
         })
       }
-      else {
-        const byteSize = Buffer.from(`${curr}\n`).length
-        const last = files[files.length - 1]
-        if (!last.isHeaderFile && (byteSize + last.size) < this.maxSize) {
-          last.writeResult = last.stream.write(`${curr}\n`)
-          last.size += byteSize
-          last.rows += 1
+      else if ((byteSize + last.buff.length) >= this.maxSize || last.isHeader) {
+        const next = {
+          buff: bufferedData,
+          isHeader: false,
         }
-        else {
-          const outputFileObject = clone(inputFileObject)
-          outputFileObject.ext = '.csv'
-          outputFileObject.name = `${outputFileName} ${last.fileNum + 1}`
-          outputFileObject.dir = join(inputFileObject.dir, `${inputFileObject.name} PARSE JOBS`)
-          if (!last.writeResult) {
-            last.stream.once('drain', () => {
-              last.stream.end()
-            })
-          }
-          else {
-            last.stream.end()
-          }
-          const stream = fs.createWriteStream(format(outputFileObject), 'utf-8')
-          const nextFile = {
-            file: outputFileObject,
-            size: byteSize,
-            stream,
-            isHeaderFile: false,
-            writeResult: stream.write(`${curr}\n`),
-            fileNum: last.fileNum + 1,
-            rows: 1,
-          }
-
-          this.spinnerObservable.next({ text: `Writing ${colors.cyan(`"${format(nextFile.file)}"`)}\n` })
-          nextFile.stream.on('error', (err) => {
-            this.spinner = this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
-          })
-
-          // stream.on('ready', () => {
-
-          files.push(nextFile)
-        }
+        acc.push(next)
       }
-      return files
-    }, []),
-  )
-
-  finalFiles$ = this.outputFiles$.pipe(
-    tap((files) => {
-      files
-    }),
-    last(),
+      else {
+        last.buff = Buffer.concat([last.buff, bufferedData])
+      }
+      return acc
+    }, [] as {
+      buff: Buffer
+      isHeader: boolean
+    }[]),
   )
 
   _bytesWritten: number = 0
@@ -175,10 +108,10 @@ class SizeTrackingWritable extends Writable {
   formattedTimestamp: string = dayjs().format('YYYY.MM.DD HH.mm.ss')
   spinnerObservable = new Subject<{
     text: string
-    method?: keyof Spinner
+    method?: keyof Ora
   }>()
 
-  spinner = yoctoSpinner()
+  spinner = ora().start()
 
   constructor(args: {
     filePath?: string
@@ -189,10 +122,18 @@ class SizeTrackingWritable extends Writable {
     this._inputFilePath = args.filePath
     this._inputRange = args.range
     this._inputSheetName = args.sheetName
+
     this.spinnerObservable.subscribe({
       next: ({ text, method = 'start' }) => {
-        if (typeof method !== 'undefined' && method in this.spinner && typeof this.spinner[method] === 'function') {
-          this.spinner[method](text)
+        if (typeof method !== 'undefined' && method in this.spinner) {
+          if (typeof this.spinner[method] === 'function') {
+            if (method === 'stopAndPersist')
+              this.spinner[method]({ text })
+            else this.spinner[method](text)
+          }
+          else {
+            this.spinner.text = text
+          }
         }
         else {
           this.spinner.start(text)
@@ -213,7 +154,7 @@ class SizeTrackingWritable extends Writable {
     // const formattedFiles = this._outputFiles.map(({ file, size }) => `\t${colors.cyan(`"${relative(this.inputFile.dir, format(file))}, ${colors.yellow(`${round(size! / 1024 / 1024, 2)} Mb`)}`)}`)
     let successMessage = `SUCCESS! ${colors.yellow(colors.underline(`${this._writeRowCount} rows written`))}.`
     // let successMessage = `${colors.green(successMessagePrefix)}\n${formattedFiles.join('\n')}`
-    if (this.rangeIncludesHeader) {
+    if (this._rangeIncludesHeader === true) {
       if (this._splitWorksheet)
         successMessage += `\n${colors.yellow('NOTE: The header row was included in the output as a separate file. You will have to copy its contents into the Data Loader.\n\n')}`
       else successMessage += `\n${colors.yellow('NOTE: The header row was included in the output.\n\n')}`
@@ -227,123 +168,42 @@ class SizeTrackingWritable extends Writable {
     })
   }
 
-  private makeFileStream(): fs.WriteStream {
-    this.incrementFileCount()
-    const currentOutputFile = this.outputFile
-    const _fileStream = fs.createWriteStream(format(currentOutputFile))
-
-    _fileStream.on('close', () => {
-      // this._outputFiles.push({
-      //   file: currentOutputFile,
-      //   size: _fileStream.bytesWritten,
-      // })
-      this.spinnerObservable.next({
-        text: `Finished writing ${colors.yellow(`${round(_fileStream.bytesWritten / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}`)}\n`,
-        method: 'success',
-      })
-    })
-    _fileStream.on('error', (err) => {
-      this.spinner = this.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
-    })
-    // _fileStream.on('ready', () => {
-    this.spinnerObservable.next({ text: `Writing ${colors.cyan(`"${relative(this.inputFile.dir, format(currentOutputFile))}"`)}\n` })
-    // })
-
-    return _fileStream
-  }
-
   get inputFile(): ParsedPath {
     return parse(this._inputFilePath ?? '')
   }
 
-  get rangeIncludesHeader(): boolean {
-    return this._rangeIncludesHeader ?? false
-  }
-
-  get isLastRow(): boolean {
-    return (this._currentRowIndex + this.decodedRange.s.r) === this.decodedRange.e.r
-  }
-
-  get isSeparateHeaderRow(): boolean {
-    return this._currentRowIndex === 0 && this._rangeIncludesHeader === true && this._splitWorksheet === true
-  }
-
-  get rowIsHeaderRow(): boolean {
-    return this._currentRowIndex === 0 && this._rangeIncludesHeader === true
-  }
-
-  get outputFile(): Omit<ParsedPath, 'base'> {
-    let outputFileName = `${this.formattedTimestamp} SHEET ${this._inputSheetName}`
-
-    if (this._splitWorksheet === true) {
-      if (this.rowIsHeaderRow)
-        outputFileName += ' HEADER'
-      else
-        outputFileName += ` ${this._fileNum}`
-    }
-    else {
-      outputFileName += ' FULL'
-    }
-
-    const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
-    ensureDirSync(parsedJobDir)
-    return {
-      ...omit(parse(this._inputFilePath!), ['base']),
-      ext: '.csv',
-      name: outputFileName,
-      dir: parsedJobDir,
-    }
-  }
-
-  get relativeOuputFile(): string {
-    return relative(this.inputFile.dir, format(this.outputFile))
-  }
-
   iterate(): void {
     const rawSheet = this._Sheets![this._inputSheetName!]
+    this.spinner.start(`Iterating through rows in ${colors.cyan(`"${this._inputSheetName}"`)}...`)
     for (const rowIdx of this.rowInidices) {
       const unprocessedRowData: JsonPrimitive[] = []
-      this._isFirstRow = rowIdx === this.decodedRange.s.r
-      this._isLastRow = rowIdx === this.decodedRange.e.r
+      const isFirstRow = rowIdx === this.decodedRange.s.r
+      const isLastRow = rowIdx === this.decodedRange.e.r
       for (const colIdx of this.columnIndices) {
         const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
         unprocessedRowData.push((currentCell?.v ?? null) as string)
       }
-      const rowData = this.processRowData(unprocessedRowData)
-      this._rowData.push(rowData)
-      this.writer$.next(Papa.unparse([rowData]))
+      if (isFirstRow && this._rangeIncludesHeader === true) {
+        const groupedColumnNames = counting(unprocessedRowData as string[], v => v)
+        const headerRowData = (unprocessedRowData as string[]).reverse().map((v) => {
+          if (groupedColumnNames[v] > 1) {
+            const count = groupedColumnNames[v]
+            groupedColumnNames[v] -= 1
+            return `${v} ${count - 1}`
+          }
+          return v
+        })
+          .reverse()
+        headerRowData.push('source_file', 'source_sheet', 'source_range')
+        this.reader$.next(Papa.unparse([unprocessedRowData]))
+      }
+
+      else {
+        unprocessedRowData.push(this.inputFile.base, this._inputSheetName!, this._inputRange!)
+        this.reader$.next(Papa.unparse([unprocessedRowData]))
+      }
     }
-    this.writer$.complete()
-  }
-
-  private processRowData(rowData: JsonPrimitive[]): JsonPrimitive[] {
-    if (this.rowIsHeaderRow) {
-      const groupedColumnNames = counting(rowData as string[], v => v)
-      const headerRowData = (rowData as string[]).reverse().map((v) => {
-        if (groupedColumnNames[v] > 1) {
-          const count = groupedColumnNames[v]
-          groupedColumnNames[v] -= 1
-          return `${v} ${count - 1}`
-        }
-        return v
-      })
-        .reverse()
-      rowData = headerRowData
-      rowData.push('source_file', 'source_sheet', 'source_range')
-    }
-
-    else {
-      rowData.push(this.inputFile.base, this._inputSheetName!, this._inputRange!)
-    }
-    return rowData
-  }
-
-  get rowData(): JsonPrimitive[] {
-    return this._currentRowData
-  }
-
-  set rowData(val: JsonPrimitive[]) {
-    this._currentRowData = val
+    this.reader$.complete()
   }
 
   get decodedRange(): XLSX.Range {
@@ -356,22 +216,6 @@ class SizeTrackingWritable extends Writable {
 
   get columnIndices(): Generator<number> {
     return range(this.decodedRange.s.c, this.decodedRange.e.c)
-  }
-
-  incrementFileCount(): void {
-    this._fileNum += 1
-  }
-
-  incrementWriteRowCount(): void {
-    this._writeRowCount += 1
-  }
-
-  getByteSize(): number {
-    return this.byteSize
-  }
-
-  hasWriteStream(): this is Merge<this, SetRequired<SizeTrackingWritable, '_outputStream'>> {
-    return this._outputStream !== undefined
   }
 
   hasInputFilePath(): this is Merge<this, SetRequired<SizeTrackingWritable, '_inputFilePath'>> {
@@ -399,14 +243,14 @@ class SizeTrackingWritable extends Writable {
       if (!fs.existsSync(this._inputFilePath)) {
         this.spinnerObservable.next({
           text: colors.red(`FILE ${colors.cyan(`"${this._inputFilePath}"`)} NOT FOUND\n`),
-          method: 'error',
+          method: 'fail',
         })
         this._inputFilePath = undefined as unknown as string
         await this.setInputFile()
       }
-      else {
-        this.spinnerObservable.next({ text: `Parsing ${colors.cyan(`"${this._inputFilePath}"`)}...\n` })
-      }
+      // else {
+      //   this.spinnerObservable.next({ text: `Parsing ${colors.cyan(`"${this._inputFilePath}"`)}...\n` })
+      // }
     }
     else {
       const cloudFolders = fg.sync(['Library/CloudStorage/**'], {
@@ -462,16 +306,19 @@ class SizeTrackingWritable extends Writable {
       if (filePath === 'canceled') {
         this.spinnerObservable.next({
           text: `Cancelled selection`,
-          method: 'error',
+          method: 'fail',
         })
         setTimeout(() => {
           process.exit(1)
         }, 1500)
       }
       this._inputFilePath = filePath!
-      const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
-      ensureDirSync(parsedJobDir)
-      this.spinnerObservable.next({ text: `Parsing ${colors.cyan(`"${buildFilePath(dirName, filePath!)}"`)}\n` })
+      // const parsedJobDir = join(this.inputFile.dir, `${this.inputFile.name} PARSE JOBS`)
+      // ensureDirSync(parsedJobDir)
+      this.spinnerObservable.next({
+        method: 'start',
+        text: `Parsing ${colors.cyan(`"${buildFilePath(dirName, filePath!)}"`)}`,
+      })
     }
   }
 
@@ -580,14 +427,14 @@ class SizeTrackingWritable extends Writable {
       this._SheetNames = SheetNames
       this.spinnerObservable.next({
         text: `Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`,
-        method: 'success',
+        method: 'succeed',
       })
       return true
     }
     else {
       this.spinnerObservable.next({
         text: `Parsed ${colors.cyan(`"${this.inputFile.base}"`)}\n`,
-        method: 'success',
+        method: 'succeed',
       })
       return true
     }
@@ -640,6 +487,7 @@ class SizeTrackingWritable extends Writable {
 export async function parseArguments(inputArgs: Pick<Arguments<boolean>, 'filePath' | 'range' | 'sheetName'>): Promise<void> {
   const streamer = new SizeTrackingWritable(inputArgs)
   await streamer.setInputFile()
+  // streamer.spinner = ora().start(`Parsing ${colors.cyan(`"${parse(streamer._inputFilePath!).base}"`)}...`)
   streamer.setSheetProperties()
   await streamer.setSheetName()
   await streamer.setRange()
@@ -647,29 +495,62 @@ export async function parseArguments(inputArgs: Pick<Arguments<boolean>, 'filePa
     await streamer.setRangeIncludesHeader()
   }
   await streamer.setSplitWorksheet()
-  streamer.finalFiles$.subscribe({
-    next: (files) => {
-      // files.forEach((file) => {
-      //   file.stream.on('finish', () => {
-      //     // this._outputFiles.push({
-      //     //   file: currentOutputFile,
-      //     //   size: stream.bytesWritten,
-      //     // })
-      //     // this.finalFiles$.next(nextFile)
-      //     streamer.spinner = yoctoSpinner()
-      //     streamer.spinner.text = `Finished writing ${colors.yellow(`${round(file.size / 1024 / 1024, 2)} Mb`)} to ${colors.cyan(`"${format(file.file)}`)}\n`
-      //   })
-      // })
-      streamer.finishParsing()
-    },
+  streamer.transformer$.pipe(
+    mergeAll(),
+    withLatestFrom(streamer.transformer$),
+    map(([file, files], fileIndex) => {
+      const headerIncluded = files.some(file => file.isHeader)
+      const fileCount = headerIncluded ? files.length - 1 : files.length
+      const getFileNum = (input: number): number => headerIncluded ? input : (input - 1)
+      const fileCountText = (input: number): string => padStart(`${input}`, `${fileCount}`.length, '0')
+      const inputFileObject = omit(parse(streamer._inputFilePath!), ['base'])
+      const outputFileObject = clone(inputFileObject)
+      const outputDirectoryWithTimestamp = join(inputFileObject.dir, `${inputFileObject.name} PARSE JOBS ${streamer.formattedTimestamp}`)
+      outputFileObject.dir = outputDirectoryWithTimestamp
+      ensureDirSync(outputDirectoryWithTimestamp)
+      const outputFileName = `SHEET ${streamer._inputSheetName} FILE`
+      const isHeader = file.isHeader
+      const dataLength = file.buff.length
+      const writeSize = getFileSizeString(dataLength)
+      if (isHeader && streamer._splitWorksheet) {
+        outputFileObject.ext = '.csv'
+        outputFileObject.name = `${outputFileName} HEADER`
+        // const outputFile = writeFile(format(outputFileObject), file.buff, { encoding: 'utf8' })
+        const logString = `"${relative(inputFileObject.dir, format(outputFileObject))}"`
+        return of(oraPromise(writeFile(format(outputFileObject), file.buff, { encoding: 'utf8' }), {
+          text: colors.cyan(logString),
+          successText: colors.green(`${logString}: ${colors.yellow(writeSize)}`),
+          failText: colors.magenta(logString),
+        }))
+      }
+      else {
+        const fileNum = getFileNum(fileIndex)
+        outputFileObject.ext = '.csv'
+        outputFileObject.name = `${outputFileName} ${fileCountText(fileNum)} of ${fileCountText(fileCount)}`
+        const logString = `"${relative(inputFileObject.dir, format(outputFileObject))}"`
+        // const outputFile = writeFile(format(outputFileObject), file.buff, { encoding: 'utf8' })
+        return of(oraPromise(writeFile(format(outputFileObject), file.buff, { encoding: 'utf8' }), {
+          text: colors.cyan(logString),
+          successText: colors.green(`${logString}: ${colors.yellow(writeSize)}`),
+          failText: colors.magenta(logString),
+        }))
+      }
+    }),
+    toArray(),
+  ).subscribe({
     error: (err) => {
-      streamer.spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+      streamer.spinner.fail(`There was an error writing the CSV file: ${colors.red(err.message)}`)
+      process.exit(1)
     },
     complete: () => {
       streamer.spinner.stop()
     },
   })
   streamer.iterate()
+}
+
+function getFileSizeString(dataLength: number): string {
+  return dataLength > (1024 * 1.1) ? dataLength > ((1024 ^ 2) * 1.1) ? `${round(dataLength / (1024 ^ 2), 2)} Mb` : `${round(dataLength / 1024, 2)} Kb` : `${dataLength} bytes`
 }
 
 function buildFilePath(dirName: string, text: string): string {

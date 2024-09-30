@@ -7,7 +7,7 @@ export default antfu(
     rules: {
       'no-undef': 'error',
       'no-unused-vars': 'warn',
-      'no-duplicate-imports': 'warn',
+      'no-duplicate-imports': 'off',
       'no-use-before-define': 'off',
       'unused-imports/no-unused-imports': 'error',
       'style/newline-per-chained-call': ['error', { ignoreChainWithDepth: 2 }],
@@ -21,11 +21,16 @@ export default antfu(
         multiline: true,
         consistent: true,
       }],
+      'node/prefer-global/buffer': ['error', 'always'],
     },
     typescript: {
       tsconfigPath: './tsconfig.json',
       overrides: {
         'no-use-before-define': 'error',
+        'import/default': 'warn',
+        'unused-imports/no-unused-imports': 'error',
+        'antfu/import-dedupe': 'error',
+        'import/no-duplicates': 'error',
       },
     },
   },
