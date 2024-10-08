@@ -1,5 +1,5 @@
-import { createReadStream, createWriteStream, existsSync, writeFileSync } from 'node:fs'
-import { appendFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { join, parse as pathParse } from 'node:path'
 import { parse, stringify } from 'csv'
 import { parse as parseSync } from 'csv/sync'
@@ -15,11 +15,11 @@ const materialClassObject: Record<string, {
   bytes: number
   fileNum: number
 }> = {}
-const inputFilePath = '/Users/benkoplin/Desktop/Sample Data_Installed Product_20241001.csv'
+const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-ReedSmithLLP/Illumina - CID 23-1561 - Documents/Facts - Sales and Marketing/SAP Reports/Installed Product by Quarter_20241007.csv'
 const parsedInputFile = pathParse(inputFilePath)
 const parsedOutputFile = omit(parsedInputFile, ['base'])
 parsedOutputFile.dir = join(parsedOutputFile.dir, `${camelCase(parsedInputFile.name)} PARSE JOB`)
-parsedOutputFile.name += ' USA ONLY'
+parsedOutputFile.name = 'installed_product_by_quarter_usa_system'
 emptyDirSync(parsedOutputFile.dir)
 ensureDirSync(parsedOutputFile.dir)
 const reader = createReadStream(inputFilePath, 'utf-8')
@@ -78,33 +78,42 @@ async function run() {
     const theseRows = parseSync(row, { skip_empty_lines: true })
 
     for await (const thisRow of theseRows) {
-      const thisMaterialClass = thisRow[indexObject.Level2ProductCategoryDescription]
+      const thisMaterialClass = thisRow[indexObject.Level3ProductLineDescription]
       if (materialClassObject[thisMaterialClass] === undefined) {
         materialClassObject[thisMaterialClass] = {
           bytes: 0,
           fileNum: 1,
         }
       }
-      let filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} ${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].fileNum}.csv`)
-      if (!existsSync(filePath))
-        writeFileSync(filePath, '', 'utf-8')
+      let filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name}_${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].fileNum}.csv`)
+
       rowCount += theseRows.length
-      materialClassObject[thisMaterialClass].bytes += row.length
-      if (materialClassObject[thisMaterialClass].bytes > (10 * 1024 * 1024)) {
+
+      const csvOutput = Papa.unparse([thisRow])
+      const csvRowLength = Buffer.from(csvOutput).length
+      if ((materialClassObject[thisMaterialClass].bytes + csvRowLength) > (20 * 1024 * 1024)) {
         files.push({
           filePath,
           bytes: materialClassObject[thisMaterialClass].bytes,
         })
         materialClassObject[thisMaterialClass].fileNum += 1
-        filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} ${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].fileNum}.csv`)
+        filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name}_${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].fileNum}.csv`)
         // if (!existsSync(filePath))
         //   writeFileSync(filePath, '', 'utf-8')
-        writeFileSync(filePath, '', 'utf-8')
-        materialClassObject[thisMaterialClass].bytes = row.length
         //   byteLength = row.length
+        await writeFile(filePath, csvOutput, {
+          flag: 'a',
+          encoding: 'utf-8',
+        })
+        materialClassObject[thisMaterialClass].bytes = csvRowLength
       }
-      const csvOutput = Papa.unparse([thisRow])
-      await appendFile(filePath, `${csvOutput}\n`, 'utf-8')
+      else {
+        await writeFile(filePath, `\n${csvOutput}`, {
+          flag: 'a',
+          encoding: 'utf-8',
+        })
+        materialClassObject[thisMaterialClass].bytes += csvRowLength
+      }
     }
   }
   // Report end
