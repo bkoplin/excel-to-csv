@@ -16,6 +16,7 @@ const parsedOutputFile = omit(parsedInputFile, ['base'])
 parsedOutputFile.dir = join(parsedOutputFile.dir, `${camelCase(parsedInputFile.name)} PARSE JOB`)
 parsedOutputFile.name += ' USA ONLY'
 ensureDirSync(parsedOutputFile.dir)
+emptyDirSync(parsedOutputFile.dir)
 const reader = createReadStream(inputFilePath, 'utf-8')
 const headerFile = createWriteStream(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`), 'utf-8')
 const parser = parse({
@@ -34,6 +35,7 @@ parser.on('data', (record) => {
 //   let record
 //   if ((record = parser.read()) !== null) {
   if (header.length === 0) {
+    // header = record as string[]
     const groupedColumnNames = counting(record as string[], v => v)
     header = (record as string[]).reverse().map((v) => {
       if (groupedColumnNames[v] > 1) {
@@ -46,7 +48,7 @@ parser.on('data', (record) => {
       .reverse()
     headerFile.end(Papa.unparse([header]))
   }
-  else if (record[55] === 'USA') {
+  else if (record[55] === 'USA' && record[26] === 'System') {
     stringifier.write(record)
   }
 //   }
@@ -57,7 +59,7 @@ async function run() {
 
   let fileCount = 1
   let filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} ${fileCount}.csv`)
-  emptyDirSync(parsedOutputFile.dir)
+
   writeFileSync(filePath, '', 'utf-8')
   let byteLength = 0
   const files = []
