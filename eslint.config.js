@@ -9,6 +9,7 @@ export default antfu(
       'no-unused-vars': 'warn',
       'no-duplicate-imports': 'off',
       'no-use-before-define': 'off',
+      'no-cond-assign': 'off',
       'unused-imports/no-unused-imports': 'error',
       'style/newline-per-chained-call': ['error', { ignoreChainWithDepth: 2 }],
       'style/object-property-newline': ['error', {
@@ -16,6 +17,10 @@ export default antfu(
         allowMultiplePropertiesPerLine: false,
       }],
       'style/multiline-comment-style': ['error', 'separate-lines'],
+      'style/no-multiple-empty-lines': ['error', {
+        max: 1,
+        maxEOF: 0,
+      }],
       'node/prefer-global/process': ['error', 'always'],
       'style/object-curly-newline': ['error', {
         multiline: true,
@@ -24,7 +29,12 @@ export default antfu(
       'node/prefer-global/buffer': ['error', 'always'],
     },
     typescript: {
-      tsconfigPath: './tsconfig.json',
+      parserOptions: {
+        projectService: {
+          allowDefaultProject: ['src/*.d.ts'],
+          defaultProject: 'tsconfig.json',
+        },
+      },
       overrides: {
         'no-use-before-define': 'error',
         'import/default': 'warn',

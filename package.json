@@ -70,6 +70,7 @@
     "rxjs": "^7.8.1",
     "simple-git-hooks": "^2.11.1",
     "type-fest": "^4.26.0",
+    "vite-tsconfig-paths": "^5.0.1",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.5.0",
     "yocto-spinner": "^0.1.0"
