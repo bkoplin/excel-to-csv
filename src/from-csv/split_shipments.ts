@@ -1,37 +1,36 @@
+import './table-layout.d'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path, { join, parse as pathParse } from 'node:path'
 import Table from 'table-layout'
 import numbro from 'numbro'
-import { alphabetical, omit, pick, zipToObject } from 'radash'
+import { alphabetical, flat, omit, pick, zipToObject } from 'radash'
 import { emptyDirSync, ensureDirSync } from 'fs-extra'
-import { camelCase, findIndex, padStart, upperFirst } from 'lodash-es'
+import { camelCase, delay, findIndex, findLast, noop, padStart, sumBy, upperFirst } from 'lodash-es'
 import Papa from 'papaparse'
-import type { JsonPrimitive, ValueOf } from 'type-fest'
+import type { JsonPrimitive } from 'type-fest'
 import ora from 'ora'
 import picocolors from 'picocolors'
 
 import type { FileMetrics } from './types'
 
-const materialClassObject: Record<string, FileMetrics> = {}
-// const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-ReedSmithLLP/Illumina - CID 23-1561 - Documents/Facts - Sales and Marketing/SAP Reports/2024.10.04 SAP Systems and Shipments/Sample Data_Shipments_20241001.csv'
-const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-ReedSmithLLP/Illumina - CID 23-1561 - Documents/Facts - Sales and Marketing/SAP Reports/Shipments_Systems_2013 to 2024_20241007.csv'
+const files: Array<FileMetrics> = []
+
 // const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-ReedSmithLLP/Illumina - CID 23-1561 - Documents/Facts - Sales and Marketing/SAP Reports/Shipments_Systems_2013 to 2024_20241007.csv'
+const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-Illumina,Inc./DOJ-CID 23-1561 & remediation - Documents/Facts - Sales and Marketing/Sales/SAP reports/Sample Data_Shipments_20241001.csv'
+
 const filterValues = [['UltimateConsigneeCountryName', 'USA'], ['MaterialClassTypeName', 'System']]
+const categoryField = 'Level3ProductLineDescription'
 const parsedInputFile = pathParse(inputFilePath)
 const parsedOutputFile = omit(parsedInputFile, ['base'])
 parsedOutputFile.dir = join(parsedOutputFile.dir, `${camelCase(parsedInputFile.name)} PARSE JOB`)
-// parsedOutputFile.name = 'shipments_usa_2013_2024'
+parsedOutputFile.name = filterValues.length ? flat(filterValues).join(' ') : parsedInputFile.name
 emptyDirSync(parsedOutputFile.dir)
 ensureDirSync(parsedOutputFile.dir)
 const reader = createReadStream(inputFilePath, 'utf-8')
 let fields: string[] = []
 const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
 const headerFile = createWriteStream(headerFilePath, 'utf-8')
-const files: Array<ValueOf<typeof materialClassObject> & {
-  CATEGORY: string
-  PATH: string
-}> = []
 const spinner = ora({
   hideCursor: false,
   discardStdin: false,
@@ -39,12 +38,10 @@ const spinner = ora({
 let parsedLines = 0
 spinner.start(`Parsing ${picocolors.cyan(parsedInputFile.base)}`)
 const maxFileSizeInMb = 20
-const filterField = 'UltimateConsigneeCountryName'
-const filterValue = 'USA'
 Papa.parse<JsonPrimitive[]>(reader, {
   async step(results, parser) {
     parser.pause()
-    if (headerFile.writable && Array.isArray(results.data)) {
+    if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
       fields = results.data as string[]
       headerFile.end(Papa.unparse([results.data]))
     }
@@ -52,78 +49,64 @@ Papa.parse<JsonPrimitive[]>(reader, {
       const thisRow = zipToObject(fields, results.data)
       parsedLines++
       if (filterValues.every(([field, value]) => thisRow[field] === value)) {
-        const thisMaterialClass = thisRow.Level3ProductLineDescription as string
-        const currentMaterialObject = materialClassObject[thisMaterialClass]
-        if (currentMaterialObject === undefined) {
-          materialClassObject[thisMaterialClass] = {
-            BYTES: 0,
-            FILENUM: 1,
-            ROWS: 0,
-          }
-        }
-        const camelCasedMaterialClass = upperFirst(camelCase(thisMaterialClass))
-        const paddedFilesCount = padStart(`${materialClassObject[thisMaterialClass].FILENUM}`, 3, '0')
-        const csvFileName = `${parsedOutputFile.name} ${camelCasedMaterialClass} ${paddedFilesCount}.csv`
-        let filePath = join(parsedOutputFile.dir, csvFileName)
-        if (materialClassObject[thisMaterialClass].BYTES === 0) {
-          spinner.text = picocolors.yellow(`Created ${csvFileName}`)
-          files.push({
-            ...materialClassObject[thisMaterialClass],
-            CATEGORY: thisMaterialClass,
-            PATH: filePath,
-          })
-        }
-        const materialObjectIndex = findIndex(files, { PATH: filePath })
         const csvOutput = Papa.unparse([results.data])
         const csvRowLength = Buffer.from(csvOutput).length
-        if (materialObjectIndex > -1) {
-          files[materialObjectIndex].BYTES += csvRowLength
-          files[materialObjectIndex].ROWS += 1
+        const category = thisRow[categoryField] as string
+        let lastCategoryMatch = findLast(files, a => a.CATEGORY === category)
+        if (lastCategoryMatch === undefined) {
+          const csvFileName = generateCsvFileName(1, category)
+          lastCategoryMatch = {
+            BYTES: csvRowLength,
+            FILENUM: 1,
+            ROWS: 1,
+            CATEGORY: category,
+            PATH: join(parsedOutputFile.dir, csvFileName),
+          }
+          files.push(lastCategoryMatch)
+          spinner.text = `Created ${picocolors.yellow(`"${csvFileName}"`)}`
         }
-        if ((materialClassObject[thisMaterialClass].BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-          materialClassObject[thisMaterialClass].FILENUM += 1
-          const zeroPaddedFiles = padStart(`${materialClassObject[thisMaterialClass].FILENUM}`, 3, '0')
-          const updatedFileName = `${parsedOutputFile.name} ${camelCasedMaterialClass} ${zeroPaddedFiles}.csv`
-          spinner.text = picocolors.yellow(`Finished with ${updatedFileName}`)
-          filePath = join(parsedOutputFile.dir, updatedFileName)
-          spinner.text = picocolors.yellow(`Created ${csvFileName}`)
-          // if (!existsSync(filePath))
-          //   writeFileSync(filePath, '', 'utf-8')
-          //   byteLength = row.length
-          await writeFile(filePath, csvOutput, {
+        else if ((lastCategoryMatch.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
+          const fileNumber = lastCategoryMatch.FILENUM + 1
+          const csvFileName = generateCsvFileName(fileNumber, category)
+          lastCategoryMatch = {
+            BYTES: csvRowLength,
+            FILENUM: fileNumber,
+            ROWS: 1,
+            PATH: join(parsedOutputFile.dir, csvFileName),
+            CATEGORY: category,
+          }
+          files.push(lastCategoryMatch)
+          spinner.text = `FINISHED WITH ${picocolors.yellow(`"${csvFileName}"`)}`
+          await delay(noop, 750)
+        }
+        else {
+          lastCategoryMatch.BYTES += csvRowLength
+          lastCategoryMatch.ROWS += 1
+          const currentFileIndex = findIndex(files, { PATH: lastCategoryMatch.PATH })
+          files[currentFileIndex] = lastCategoryMatch
+          spinner.text = `Writing ${picocolors.yellow(`"${path.parse(lastCategoryMatch.PATH).base}"`)}`
+        }
+        if (lastCategoryMatch.BYTES === csvRowLength) {
+          await writeFile(lastCategoryMatch.PATH, csvOutput, {
             flag: 'a',
             encoding: 'utf-8',
           })
-          materialClassObject[thisMaterialClass].BYTES = csvRowLength
-          materialClassObject[thisMaterialClass].ROWS = 1
-          files.push({
-            ...materialClassObject[thisMaterialClass],
-            CATEGORY: thisMaterialClass,
-            PATH: filePath,
-          })
         }
         else {
-          if (materialClassObject[thisMaterialClass].BYTES === 0) {
-            await writeFile(filePath, csvOutput, {
-              flag: 'a',
-              encoding: 'utf-8',
-            })
-          }
-          else {
-            await writeFile(filePath, `\n${csvOutput}`, {
-              flag: 'a',
-              encoding: 'utf-8',
-            })
-          }
-          materialClassObject[thisMaterialClass].BYTES += csvRowLength
-          materialClassObject[thisMaterialClass].ROWS += 1
+          await writeFile(lastCategoryMatch.PATH, `\n${csvOutput}`, {
+            flag: 'a',
+            encoding: 'utf-8',
+          })
         }
       }
     }
     parser.resume()
   },
-  complete: (results) => {
+  complete: () => {
     const parseResults = alphabetical(files, o => `${o.CATEGORY}${padStart(`${o.FILENUM}`, 3, '0')}`).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
+    const totalRows = sumBy(files, 'ROWS')
+    const totalBytes = sumBy(files, 'BYTES')
+    const totalFiles = files.length
     const table = new Table(parseResults, {
       maxWidth: 600,
       columns: [
@@ -133,16 +116,12 @@ Papa.parse<JsonPrimitive[]>(reader, {
         },
         {
           name: 'PATH',
-          get: cellValue => picocolors.cyan(path.parse(cellValue).base),
+          get: cellValue => picocolors.cyan(cellValue),
         },
         {
           name: 'ROWS',
           get: cellValue => `ROWS: ${numbro(cellValue).format({ thousandSeparated: true })}`,
         },
-        // {
-        //   name: 'FILES',
-        //   get: cellValue => picocolors.cyan(numbro(cellValue).format({ thousandSeparated: true })),
-        // },
         {
           name: 'BYTES',
           get: (cellValue) => {
@@ -160,164 +139,31 @@ Papa.parse<JsonPrimitive[]>(reader, {
       ],
 
     })
-    // spinner.text = table.toString()
-    spinner.succeed(picocolors.green(`SUCCESSFULLY PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES\n`) + table.toString())
+
+    const formattedParsedLines = numbro(parsedLines).format({ thousandSeparated: true })
+    const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
+    const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
+    const formattedTotalBytes = numbro(totalBytes).format({
+      output: 'byte',
+      spaceSeparated: true,
+      base: 'general',
+      average: true,
+      mantissa: 2,
+      optionalMantissa: true,
+    })
+    spinner.succeed(`SUCCESSFULLY PARSED ${picocolors.green(formattedParsedLines)} LINES INTO ${picocolors.green(formattedTotalRows)} LINES ACROSS ${picocolors.green(formattedTotalFiles)} FILES TOTALLING ${picocolors.green(formattedTotalBytes)}\n${table.toString()}`)
     process.exit()
   },
   error(error, file) {
     spinner.fail(picocolors.red('FAILED TO PARSE FILES\n') + error)
   },
-  // preview: 10,
+
   header: false,
   transform: value => value.trim() === '' ? null : value.trim(),
 })
-// reader.then((csvFile) => {
-// })
-// reader.on('data', (chunk) => {
-//   parser.write(chunk)
-// })
-// const parser = parse({
-//   bom: true,
-//   trim: true,
-//   //   cast: true,
-//   //   cast_date: true,
-// })
-// parser.on('data', (record) => {
-//   //   let record
-//   //   if ((record = parser.read()) !== null) {
-//   if (header.length === 0) {
-//     // header = record as string[]
-//     const groupedColumnNames = counting(record as string[], v => v)
-//     header = (record as string[]).reverse().map((v) => {
-//       if (groupedColumnNames[v] > 1) {
-//         const count = groupedColumnNames[v]
-//         groupedColumnNames[v] -= 1
-//         return `${v} ${count - 1}`
-//       }
-//       return v
-//     })
-//       .reverse()
-//     header.forEach((v, i) => indexObject[v] = i)
-//     headerFile.end(Papa.unparse([header]))
-//   }
-//   else {
-//     const UltimateConsigneeCountryName = record[indexObject.UltimateConsigneeCountryName]
-//     if (UltimateConsigneeCountryName === 'USA') {
-//       stringifier.write(record)
-//     }
-//   }
-// //   }
-// })
-// oraPromise(async (spinner): Promise<Record<string, {
-//   BYTES: number
-//   FILES: number
-//   ROWS: number
-// }>> => {
-//   spinner.start(`Parsing ${parsedInputFile.base}`)
-//   try {
-//     const val = await run()
-//     const parseResults = alphabetical(objectEntries(val).map(([material, parseObject]) => ({
-//       material,
-//       ...parseObject,
-//     })), o => `${o.material}${padStart(`${o.FILES}`, 3, '0')}`)
-//     const table = new Table(parseResults, { maxWidth: 600 })
-//     spinner.text = table.toString()
-//     return val
-//     // spinner.succeed()
-//   }
-//   catch (err) {
-//     spinner.text = err?.message
-//     throw err
-//     // spinner.fail(picocolors.red('FAILED TO PARSE FILES\n') + err)
-//   }
-// }, {
-//   successText: picocolors.green('SUCCESSFULLY PARSED FILES\n'),
-//   failText: picocolors.red('FAILED TO PARSE FILES\n'),
-// })
-// async function run(): Promise<Record<string, {
-//   BYTES: number
-//   FILES: number
-//   ROWS: number
-// }>> {
-//   const files = []
-//   const ROWS = 0
-//   const fileCount = 1
 
-//   //   ensureFileSync(filePath)
-//   // Report start
-//   // Iterate through each records
-//   for await (const row of stringifier) {
-//     // Report current line
-//     // Fake asynchronous operation
-//     const theseRows = parseSync(row, { skip_empty_lines: true })
-
-//     for await (const thisRow of theseRows) {
-//       const thisMaterialClass = thisRow[indexObject.Level3ProductLineDescription]
-//       if (materialClassObject[thisMaterialClass] === undefined) {
-//         materialClassObject[thisMaterialClass] = {
-//           BYTES: 0,
-//           FILES: 1,
-//           ROWS: 0,
-//         }
-//       }
-//       let filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name}_${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].FILES}.csv`)
-
-//       const csvOutput = Papa.unparse([thisRow])
-//       const csvRowLength = Buffer.from(csvOutput).length
-//       if ((materialClassObject[thisMaterialClass].BYTES + csvRowLength) > (20 * 1024 * 1024)) {
-//         files.push({
-//           filePath,
-//           BYTES: materialClassObject[thisMaterialClass].BYTES,
-//         })
-//         materialClassObject[thisMaterialClass].FILES += 1
-//         filePath = join(parsedOutputFile.dir, `${parsedOutputFile.name}_${snakeCase(thisMaterialClass)} ${materialClassObject[thisMaterialClass].FILES}.csv`)
-//         // if (!existsSync(filePath))
-//         //   writeFileSync(filePath, '', 'utf-8')
-//         //   byteLength = row.length
-//         await writeFile(filePath, csvOutput, {
-//           flag: 'a',
-//           encoding: 'utf-8',
-//         })
-//         materialClassObject[thisMaterialClass].BYTES = csvRowLength
-//         materialClassObject[thisMaterialClass].ROWS = 1
-//       }
-//       else {
-//         await writeFile(filePath, `\n${csvOutput}`, {
-//           flag: 'a',
-//           encoding: 'utf-8',
-//         })
-//         materialClassObject[thisMaterialClass].BYTES += csvRowLength
-//         materialClassObject[thisMaterialClass].ROWS += 1
-//       }
-//     }
-//   }
-//   // Report end
-//   return materialClassObject
-// }
-// parser.on('readable', () => {
-//   let record
-//   while ((record = parser.read()) !== null) {
-//     if (header.length === 0) {
-//       const groupedColumnNames = counting(record as string[], v => v)
-//       header = (record as string[]).reverse().map((v) => {
-//         if (groupedColumnNames[v] > 1) {
-//           const count = groupedColumnNames[v]
-//           groupedColumnNames[v] -= 1
-//           return `${v} ${count - 1}`
-//         }
-//         return v
-//       })
-//         .reverse()
-//       writeData(Papa.unparse([header]), headerFile)
-//     }
-//     else if (record[55] === 'USA') {
-//       writeData(record, stringifier)
-//     }
-//   }
-// })
-// Catch any error
-// parser.on('error', (err) => {
-//   console.error(err.message)
-// })
-
-// reader.pipe(parser).pipe(stringifier)
+function generateCsvFileName(fileNumber: number, category: string): string {
+  const paddedFilesCount = padStart(`${fileNumber}`, 3, '0')
+  const csvFileName = `${parsedOutputFile.name} ${upperFirst(camelCase(category))} ${paddedFilesCount}.csv`
+  return csvFileName
+}
