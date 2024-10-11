@@ -27,7 +27,7 @@ splitCSV({
   maxFileSizeInMb: 30,
   // writeHeaderOnEachFile: true,
 })
-async function splitCSV<Options extends SplitOptions>({ inputFilePath, filterValues = [], categoryField = '', maxFileSizeInMb, writeHeaderOnEachFile = false }: Options): Promise<void> {
+export async function splitCSV<Options extends SplitOptions>({ inputFilePath, filterValues = [], categoryField = '', maxFileSizeInMb, writeHeaderOnEachFile = false }: Options): Promise<void> {
   const spinner = ora({
     hideCursor: false,
     discardStdin: false,
