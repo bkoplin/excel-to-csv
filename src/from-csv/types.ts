@@ -1,10 +1,15 @@
 
 export interface FileMetrics {
   BYTES: number
-  FILENUM: number
+  FILENUM?: number
   ROWS: number
   PATH: string
-  CATEGORY: string
+  CATEGORY?: string
 }
-
-export {}
+export interface SplitOptions {
+  inputFilePath: string
+  filterValues?: Array<[string, string]>
+  categoryField?: string
+  maxFileSizeInMb?: number
+  writeHeaderOnEachFile?: boolean
+}
