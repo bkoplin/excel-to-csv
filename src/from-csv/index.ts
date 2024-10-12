@@ -1,4 +1,3 @@
-import { homedir } from 'node:os'
 import './table-layout.d'
 import {
   createReadStream,
@@ -13,7 +12,6 @@ import {
   format,
   join,
   parse,
-  relative,
 } from 'pathe'
 import { filename } from 'pathe/utils'
 import Table from 'table-layout'
@@ -29,6 +27,7 @@ import fs from 'fs-extra'
 import {
   camelCase,
   delay,
+  escape,
   findIndex,
   findLast,
   isUndefined,
@@ -47,7 +46,6 @@ import type {
 import ora from 'ora'
 import picocolors from 'picocolors'
 import yaml from 'yaml'
-import fg from 'fast-glob'
 import dayjs from 'dayjs'
 import type { CommandOptions } from '../split-csv'
 import type { FileMetrics } from './types'
@@ -71,8 +69,8 @@ export async function splitCSV<Options extends CommandOptions>(options: Options)
   const parsedInputFile = parse(inputFilePath)
   spinner.start(`Parsing ${picocolors.cyan(filename(inputFilePath))}`)
   const parsedOutputFile = omit(parsedInputFile, ['base'])
-  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm-ss'))
-  parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
+  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-MM') + (filters.length ? ' FILTERED' : ''))
+  // parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
   fs.emptyDirSync(parsedOutputFile.dir)
   // ensureDirSync(parsedOutputFile.dir)
   fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), splitOptions)
@@ -83,7 +81,7 @@ export async function splitCSV<Options extends CommandOptions>(options: Options)
   let parsedLines = 0
   Papa.parse<JsonPrimitive[]>(reader, {
     async step(results, parser) {
-      parser.pause()
+      // parser.pause()
       if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
         fields = results.data as string[]
         headerFile.end(Papa.unparse([results.data]))
@@ -149,7 +147,7 @@ export async function splitCSV<Options extends CommandOptions>(options: Options)
           await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
         }
       }
-      parser.resume()
+      // parser.resume()
     },
     complete: async () => {
       const maxFileNumLength = `${maxBy(files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length
@@ -174,7 +172,7 @@ export async function splitCSV<Options extends CommandOptions>(options: Options)
           },
           {
             name: 'PATH',
-            get: cellValue => picocolors.cyan(`~/${fg.escapePath(relative(homedir(), cellValue as string))}`),
+            get: cellValue => picocolors.cyan(escape(cellValue as string)),
           },
           {
             name: 'ROWS',
