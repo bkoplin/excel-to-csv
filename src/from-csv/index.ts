@@ -1,8 +1,5 @@
 import './table-layout.d'
-import {
-  createReadStream,
-  createWriteStream,
-} from 'node:fs'
+import { createWriteStream } from 'node:fs'
 import {
   appendFile,
   readFile,
@@ -50,7 +47,7 @@ import dayjs from 'dayjs'
 import type { CommandOptions } from '../split-csv'
 import type { FileMetrics } from './types'
 
-export async function splitCSV<Options extends CommandOptions>(options: Options): Promise<void> {
+export async function splitCSV<Options extends CommandOptions>(inputFile: ReturnType<typeof fs.createReadStream>, options: Options): Promise<void> {
   const splitOptions = yaml.stringify(options)
   const {
     inputFilePath,
@@ -74,12 +71,12 @@ export async function splitCSV<Options extends CommandOptions>(options: Options)
   fs.emptyDirSync(parsedOutputFile.dir)
   // ensureDirSync(parsedOutputFile.dir)
   fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), splitOptions)
-  const reader = createReadStream(inputFilePath, 'utf-8')
+  // const reader = createReadStream(inputFilePath, 'utf-8')
   let fields: string[] = []
   const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
   const headerFile = createWriteStream(headerFilePath, 'utf-8')
   let parsedLines = 0
-  Papa.parse<JsonPrimitive[]>(reader, {
+  Papa.parse<JsonPrimitive[]>(inputFile, {
     async step(results, parser) {
       // parser.pause()
       if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
