@@ -8,7 +8,7 @@ export interface FileMetrics {
 }
 export interface SplitOptions {
   inputFilePath: string
-  filterValues?: Array<[string, string]>
+  filterValues?: string[][]
   categoryField?: string
   maxFileSizeInMb?: number
   writeHeaderOnEachFile?: boolean

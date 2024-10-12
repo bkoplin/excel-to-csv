@@ -10,6 +10,7 @@ export default antfu(
       'no-duplicate-imports': 'off',
       'no-use-before-define': 'off',
       'no-cond-assign': 'off',
+      'no-console': 'warn',
       'unused-imports/no-unused-imports': 'error',
       'style/newline-per-chained-call': ['error', { ignoreChainWithDepth: 2 }],
       'style/object-property-newline': ['error', {
@@ -21,12 +22,17 @@ export default antfu(
         max: 1,
         maxEOF: 0,
       }],
+      'style/function-paren-newline': ['error', 'consistent'],
       'node/prefer-global/process': ['error', 'always'],
       'style/object-curly-newline': ['error', {
         multiline: true,
-        consistent: true,
+        // consistent: true,
+        minProperties: 2,
       }],
       'node/prefer-global/buffer': ['error', 'always'],
+      'unicorn/prefer-modern-math-apis': 'error',
+      'unicorn/no-lonely-if': 'error',
+      'unicorn/no-array-for-each': 'error',
     },
     typescript: {
       parserOptions: {

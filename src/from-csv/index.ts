@@ -1,45 +1,81 @@
+import { homedir } from 'node:os'
 import './table-layout.d'
-import { createReadStream, createWriteStream } from 'node:fs'
-import { open, writeFile } from 'node:fs/promises'
-import path, { join, parse as pathParse, relative } from 'node:path'
+import {
+  createReadStream,
+  createWriteStream,
+} from 'node:fs'
+import {
+  appendFile,
+  readFile,
+  writeFile,
+} from 'node:fs/promises'
+import {
+  format,
+  join,
+  parse,
+  relative,
+} from 'pathe'
+import { filename } from 'pathe/utils'
 import Table from 'table-layout'
 import numbro from 'numbro'
-import { alphabetical, flat, omit, pick, zipToObject } from 'radash'
-import { emptyDirSync, ensureDirSync } from 'fs-extra'
-import { camelCase, delay, findIndex, findLast, isUndefined, last, maxBy, noop, padStart, sumBy, upperFirst } from 'lodash-es'
+import {
+  alphabetical,
+  isNumber,
+  omit,
+  pick,
+  zipToObject,
+} from 'radash'
+import fs from 'fs-extra'
+import {
+  camelCase,
+  delay,
+  findIndex,
+  findLast,
+  isUndefined,
+  last,
+  maxBy,
+  noop,
+  padStart,
+  sumBy,
+  upperFirst,
+} from 'lodash-es'
 import Papa from 'papaparse'
-import type { JsonPrimitive, SetRequired } from 'type-fest'
+import type {
+  JsonPrimitive,
+  SetRequired,
+} from 'type-fest'
 import ora from 'ora'
 import picocolors from 'picocolors'
+import yaml from 'yaml'
+import fg from 'fast-glob'
+import dayjs from 'dayjs'
+import type { CommandOptions } from '../split-csv'
+import type { FileMetrics } from './types'
 
-import type { FileMetrics, SplitOptions } from './types'
-
-// const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-ReedSmithLLP/Illumina - CID 23-1561 - Documents/Facts - Sales and Marketing/SAP Reports/Shipments_Systems_2013 to 2024_20241007.csv'
-const inputFilePath = '/Users/benkoplin/Library/CloudStorage/OneDrive-SharedLibraries-Illumina,Inc./DOJ-CID 23-1561 & remediation - Documents/Facts - Sales and Marketing/Sales/SAP reports/Sample Data_Shipments_20241001.csv'
-
-const filterValues = [['UltimateConsigneeCountryName', 'USA'], ['MaterialClassTypeName', 'System']]
-const categoryField = 'Level3ProductLineDescription'
-const maxFileSizeInMb = 20
-splitCSV({
-  inputFilePath: '/Users/benkoplin/Library/CloudStorage/OneDrive-ReedSmithLLP/Downloads/POS_File_CLIA_Q1_2024.csv',
-  // filterValues: [['UltimateConsigneeCountryName', 'USA'], ['MaterialClassTypeName', 'System']],
-  // categoryField: 'Level3ProductLineDescription',
-  maxFileSizeInMb: 30,
-  // writeHeaderOnEachFile: true,
-})
-export async function splitCSV<Options extends SplitOptions>({ inputFilePath, filterValues = [], categoryField = '', maxFileSizeInMb, writeHeaderOnEachFile = false }: Options): Promise<void> {
+export async function splitCSV<Options extends CommandOptions>(options: Options): Promise<void> {
+  const splitOptions = yaml.stringify(options)
+  const {
+    inputFilePath,
+    categoryField = '',
+    maxFileSizeInMb,
+    matchType,
+    filters = [],
+  } = options
+  // const filters = options.filters ?? []
+  const writeHeaderOnEachFile = options.header
   const spinner = ora({
     hideCursor: false,
     discardStdin: false,
   })
   const files: Array<FileMetrics> = []
-  const parsedInputFile = pathParse(inputFilePath)
-  spinner.start(`Parsing ${picocolors.cyan(parsedInputFile.base)}`)
+  const parsedInputFile = parse(inputFilePath)
+  spinner.start(`Parsing ${picocolors.cyan(filename(inputFilePath))}`)
   const parsedOutputFile = omit(parsedInputFile, ['base'])
-  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOB`)
-  parsedOutputFile.name = filterValues.length ? flat(filterValues).join(' ') : parsedInputFile.name
-  emptyDirSync(parsedOutputFile.dir)
-  ensureDirSync(parsedOutputFile.dir)
+  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm-ss'))
+  parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
+  fs.emptyDirSync(parsedOutputFile.dir)
+  // ensureDirSync(parsedOutputFile.dir)
+  fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), splitOptions)
   const reader = createReadStream(inputFilePath, 'utf-8')
   let fields: string[] = []
   const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
@@ -55,10 +91,11 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
       else {
         const thisRow = zipToObject(fields, results.data)
         parsedLines++
-        if (filterValues.length === 0 || filterValues.every(([field, value]) => thisRow[field] === value)) {
+        if (filters.length === 0 || (filters.every(([field, value]) => thisRow[field] === value) && matchType === 'all') || (filters.some(([field, value]) => thisRow[field] === value) && matchType === 'any') || (filters.every(([field, value]) => thisRow[field] !== value) && matchType === 'none')) {
           const csvOutput = Papa.unparse([results.data])
           const csvRowLength = Buffer.from(csvOutput).length
           const category = thisRow[categoryField] as string | undefined
+
           const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined) as Options['maxFileSizeInMb'] extends number ? number : undefined
           const defaultCsvFileName = generateCsvFileName({
             fileNumber: defaultFileNumber,
@@ -69,7 +106,7 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
             FILENUM: defaultFileNumber,
             ROWS: 1,
             CATEGORY: category,
-            PATH: path.format({
+            PATH: format({
               ...parsedOutputFile,
               name: defaultCsvFileName,
             }),
@@ -81,7 +118,10 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
             spinner.text = `Created ${picocolors.yellow(`"${defaultCsvFileName}"`)}`
             await delay(noop, 750)
           }
-          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
+          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && isNumber(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
+            files.push(activeFileObject)
+            spinner.text = `FINISHED WITH ${picocolors.yellow(`"${csvFileName}"`)}`
+            await delay(noop, 750)
             const fileNumber = activeFileObject.FILENUM! + 1
             const csvFileName = generateCsvFileName({
               fileNumber,
@@ -91,35 +131,22 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
               BYTES: csvRowLength,
               FILENUM: fileNumber,
               ROWS: 1,
-              PATH: path.format({
+              PATH: format({
                 ...parsedOutputFile,
                 name: csvFileName,
               }),
               CATEGORY: category,
             }
-            files.push(activeFileObject)
-            spinner.text = `FINISHED WITH ${picocolors.yellow(`"${csvFileName}"`)}`
-            await delay(noop, 750)
           }
           else {
             activeFileObject.BYTES += csvRowLength
             activeFileObject.ROWS += 1
             const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
             files[currentFileIndex] = activeFileObject
-            spinner.text = `Writing ${picocolors.yellow(`"${path.parse(activeFileObject.PATH).base}"`)}`
+            spinner.text = `Writing ${picocolors.yellow(`"${parse(activeFileObject.PATH).base}"`)}`
           }
-          if (activeFileObject.BYTES === csvRowLength) {
-            await writeFile(activeFileObject.PATH, csvOutput, {
-              flag: 'a',
-              encoding: 'utf-8',
-            })
-          }
-          else {
-            await writeFile(activeFileObject.PATH, `\n${csvOutput}`, {
-              flag: 'a',
-              encoding: 'utf-8',
-            })
-          }
+
+          await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
         }
       }
       parser.resume()
@@ -133,8 +160,8 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
       if (writeHeaderOnEachFile) {
         for (const file of files) {
           const header = Papa.unparse([fields])
-          const openFile = await open(file.PATH, 'a')
-          await openFile.write(`${header}\n`, 0, 'utf-8')
+          const openFile = await readFile(file.PATH, 'utf-8')
+          await writeFile(file.PATH, `${header}\n${openFile}`, 'utf-8')
         }
       }
       const table = new Table(parseResults, {
@@ -147,7 +174,7 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
           },
           {
             name: 'PATH',
-            get: cellValue => picocolors.cyan(`./${relative(parsedInputFile.dir, cellValue as string)}`),
+            get: cellValue => picocolors.cyan(`~/${fg.escapePath(relative(homedir(), cellValue as string))}`),
           },
           {
             name: 'ROWS',
@@ -186,11 +213,11 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
         mantissa: 2,
         optionalMantissa: true,
       })
-      let spinnerText = `SUCCESSFULLY PARSED ${picocolors.green(formattedParsedLines)} LINES INTO ${picocolors.green(formattedTotalRows)} LINES ACROSS ${picocolors.green(formattedTotalFiles)} FILES`
+      let spinnerText = `SUCCESSFULLY PARSED ${picocolors.green(formattedParsedLines)} LINES INTO ${picocolors.green(formattedTotalRows)} LINES ACROSS ${picocolors.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${picocolors.green(formattedTotalBytes)}\n`
+
       if (writeHeaderOnEachFile)
-        spinnerText += picocolors.yellow(` WITH HEADERS IN EACH FILE`)
-      else spinnerText += picocolors.yellow(` WITH A SEPARATE HEADER FILE`)
-      spinnerText += ` TOTALLING ${picocolors.green(formattedTotalBytes)}`
+        spinnerText += picocolors.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
+      else spinnerText += picocolors.yellow(`THE HEADER FOR ALL FILES IS ${picocolors.cyan(`"${parse(headerFilePath).base}"`)}\n`)
       spinner.succeed(`${spinnerText}\n${table.toString()}`)
       process.exit()
     },
@@ -201,17 +228,20 @@ export async function splitCSV<Options extends SplitOptions>({ inputFilePath, fi
     header: false,
     transform: value => value.trim() === '' ? null : value.trim(),
   })
-  function generateCsvFileName({ fileNumber, category }: {
+  function generateCsvFileName({
+    fileNumber,
+    category,
+  }: {
     fileNumber?: number
     category?: string
   } = {}): string {
     let csvFileName = parsedOutputFile.name
-    // } ${upperFirst(camelCase(category))} ${paddedFilesCount}.csv`
+
     if (typeof category !== 'undefined')
       csvFileName += ` ${upperFirst(camelCase(category))}`
     if (typeof fileNumber !== 'undefined')
       csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`
-    // const paddedFilesCount = padStart(`${fileNumber}`, 3, '0')
+
     return csvFileName
   }
 }
