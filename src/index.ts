@@ -2,21 +2,54 @@ import { inspect } from 'node:util'
 import * as fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import type { ParsedPath } from 'node:path'
-import { basename, format, join, parse, relative, sep } from 'node:path'
+import {
+  basename,
+  format,
+  join,
+  parse,
+  relative,
+  sep,
+} from 'node:path'
 import { homedir } from 'node:os'
 import { log } from 'node:console'
 import fg from 'fast-glob'
 import Papa from 'papaparse'
 import inquirerFileSelector from 'inquirer-file-selector'
 import * as XLSX from 'xlsx'
-import { counting, inRange, isEmpty, omit } from 'radash'
+import {
+  counting,
+  inRange,
+  isEmpty,
+  omit,
+} from 'radash'
 import type { JsonPrimitive } from 'type-fest'
 import colors from 'picocolors'
-import { confirm, expand, input, number, select } from '@inquirer/prompts'
+import {
+  confirm,
+  expand,
+  input,
+  number,
+  select,
+} from '@inquirer/prompts'
 import { Separator } from '@inquirer/core'
 import ora from 'ora'
-import { BehaviorSubject, Subject, concatMap, forkJoin, from, map, range as range$, reduce, switchMap, tap, withLatestFrom } from 'rxjs'
-import { isUndefined, round } from 'lodash-es'
+import {
+  BehaviorSubject,
+  Subject,
+  concatMap,
+  forkJoin,
+  from,
+  map,
+  range as range$,
+  reduce,
+  switchMap,
+  tap,
+  withLatestFrom,
+} from 'rxjs'
+import {
+  isUndefined,
+  round,
+} from 'lodash-es'
 import type { Arguments } from './arguments'
 /* async_RS reads a stream and returns a Promise resolving to a workbook */
 
@@ -150,7 +183,10 @@ const iterator$ = forkJoin<[XLSX.WorkBook, string, string]>([inputWb$, inputShee
     }
   }),
   withLatestFrom(rowIterator, columnIterator),
-  map(([{ rawSheet, sheet }, rowIdx, colIdx]) => {
+  map(([{
+    rawSheet,
+    sheet,
+  }, rowIdx, colIdx]) => {
     spinner.text = `Iterating through rows in ${colors.cyan(`"${sheet}"`)}...`
     spinner.start()
     const unprocessedRowData: JsonPrimitive[] = []
@@ -186,11 +222,7 @@ function selectExcelFile(basePath: string): Promise<string> {
     hideNonMatch: true,
     allowCancel: true,
     pageSize: 20,
-    theme: {
-      style: {
-        currentDir: (text: string) => colors.magenta(join(`.`, basename(basePath), relative(basePath, text))),
-      },
-    },
+    theme: { style: { currentDir: (text: string) => colors.magenta(join(`.`, basename(basePath), relative(basePath, text))) } },
     match(filePath) {
       if (filePath.isDir) {
         return !filePath.path.split(sep).some(v => /^[^A-Z0-9]/i.test(v))

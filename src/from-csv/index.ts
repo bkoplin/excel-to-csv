@@ -5,6 +5,7 @@ import {
   readFile,
   writeFile,
 } from 'node:fs/promises'
+import type { Readable } from 'node:stream'
 import {
   format,
   join,
@@ -47,7 +48,7 @@ import dayjs from 'dayjs'
 import type { CommandOptions } from '../split-csv'
 import type { FileMetrics } from './types'
 
-export async function splitCSV<Options extends CommandOptions>(inputFile: ReturnType<typeof fs.createReadStream>, options: Options): Promise<void> {
+export async function splitCSV<Options extends CommandOptions>(inputFile: Readable, options: Options): Promise<void> {
   const splitOptions = yaml.stringify(options)
   const {
     inputFilePath,
@@ -66,7 +67,8 @@ export async function splitCSV<Options extends CommandOptions>(inputFile: Return
   const parsedInputFile = parse(inputFilePath)
   spinner.start(`Parsing ${picocolors.cyan(filename(inputFilePath))}`)
   const parsedOutputFile = omit(parsedInputFile, ['base'])
-  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-MM') + (filters.length ? ' FILTERED' : ''))
+  parsedOutputFile.ext = '.csv'
+  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (filters.length ? ' FILTERED' : ''))
   // parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
   fs.emptyDirSync(parsedOutputFile.dir)
   // ensureDirSync(parsedOutputFile.dir)
@@ -78,7 +80,7 @@ export async function splitCSV<Options extends CommandOptions>(inputFile: Return
   let parsedLines = 0
   Papa.parse<JsonPrimitive[]>(inputFile, {
     async step(results, parser) {
-      // parser.pause()
+      parser.pause()
       if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
         fields = results.data as string[]
         headerFile.end(Papa.unparse([results.data]))
@@ -115,7 +117,7 @@ export async function splitCSV<Options extends CommandOptions>(inputFile: Return
           }
           else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && isNumber(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
             files.push(activeFileObject)
-            spinner.text = `FINISHED WITH ${picocolors.yellow(`"${csvFileName}"`)}`
+            spinner.text = `FINISHED WITH ${picocolors.yellow(`"${filename(activeFileObject.PATH)}"`)}`
             await delay(noop, 750)
             const fileNumber = activeFileObject.FILENUM! + 1
             const csvFileName = generateCsvFileName({
@@ -144,7 +146,7 @@ export async function splitCSV<Options extends CommandOptions>(inputFile: Return
           await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
         }
       }
-      // parser.resume()
+      parser.resume()
     },
     complete: async () => {
       const maxFileNumLength = `${maxBy(files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length

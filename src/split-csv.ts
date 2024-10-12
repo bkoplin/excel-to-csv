@@ -45,7 +45,7 @@ const categoryOption = new Commander.Option(
 )
   .preset('')
   .default(undefined)
-const writeHeaderOption = new Commander.Option('-h, --header', 'whether to write the CSV header on each file (if not set to true, the header will be written separately, even if there is only one file)').default(false)
+const writeHeaderOption = new Commander.Option('-h, --header', 'disable writing the CSV header to each file (if you include this flag, the header will be written separately, even if there is only one file)')
 const maxFileSizeOption = new Commander.Option(
   '-s, --max-file-size-in-mb [NUMBER]',
   'the maximum size of each file in MB',
@@ -80,7 +80,7 @@ const excelCommand = new Commander.Command('excel').addArgument(filePath)
       type: 'buffer',
       cellDates: true,
     })
-    if (typeof options.sheet === 'undefined' || typeof options.sheet === 'boolean') {
+    if (typeof options.sheet === 'undefined' || typeof options.sheet === 'boolean' || !wb.SheetNames.includes(options.sheet)) {
       options.sheet = await setSheetName(wb)
     }
     if (typeof options.range === 'undefined' || typeof options.range === 'boolean') {
