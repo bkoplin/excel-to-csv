@@ -1,5 +1,16 @@
 import type { ParsedPath } from 'node:path'
 import type XLSX from 'xlsx'
+import {
+  Argument,
+  Option,
+} from '@commander-js/extra-typings'
+import chalk from 'chalk'
+import {
+  isNaN,
+  toNumber,
+} from 'lodash-es'
+import type { JsonPrimitive } from 'type-fest'
+import { checkAndResolveFilePath } from './excel/helpers'
 
 export interface Arguments<T extends boolean = false> {
   bytesWritten?: number
@@ -27,3 +38,54 @@ export interface Arguments<T extends boolean = false> {
   Sheets?: { [sheet: string]: XLSX.WorkSheet }
   splitWorksheet?: T
 }
+
+export const filePathArgument = new Argument('[path]', 'the full path to the CSV file')
+  .argParser(async (value: string | undefined) => await checkAndResolveFilePath('CSV', value))
+
+export function makeFilePathOption(parserType: 'Excel' | 'CSV'): Option<'--file-path [path]', undefined, undefined, string, false, undefined> {
+  return new Option('--file-path [path]', `the full path to the ${chalk.yellowBright(parserType)} file`)
+}
+export const filterValuesOption = new Option(
+  '--row-filters [operators...]',
+  `one or more pairs of colum headers and values to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}`,
+)
+  .implies({ matchType: `all` })
+  .argParser((val, filters: Record<string, Array<JsonPrimitive>> = {}) => {
+    const [key, value] = val.split(':').map(v => v.trim())
+    if (key.length) {
+      if (value.length) {
+        if (!isNaN(toNumber(value))) {
+          filters[key] = [...filters[key], toNumber(value)]
+        }
+        else if (value === 'true' || value === 'false') {
+          filters[key] = [...filters[key], value === 'true']
+        }
+        else {
+          filters[key] = [...filters[key], value]
+        }
+      }
+      else {
+        filters[key] = [...filters[key], true]
+      }
+    }
+    return filters
+  })
+export const categoryOption = new Option(
+  '-c, --category-field [column title]',
+  'the name of a column whose value will be used to create each separate file',
+)
+  .default(undefined as unknown as string | undefined)
+export const maxFileSizeOption = new Option(
+  '--file-size [number]',
+  'the maximum size of each file in MB (if not set, the files will not be split by size)',
+)
+  .default(undefined)
+  .argParser((val): number | undefined => typeof val === 'undefined' || val === null || isNaN(toNumber(val)) ? undefined : toNumber(val))
+export const filterTypeOption = new Option('--match-type', 'the type of match to use when filtering rows')
+  .choices([`all`, `any`, `none`] as const)
+  .default(`all` as const)
+
+export const writeHeaderOption = new Option(
+  '--no-header',
+  'disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
+)

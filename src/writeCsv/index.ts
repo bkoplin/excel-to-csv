@@ -45,10 +45,10 @@ import ora from 'ora'
 import picocolors from 'picocolors'
 import yaml from 'yaml'
 import dayjs from 'dayjs'
-import type { CommandOptions } from '../split-csv'
+import type { CommandOptions } from '..'
 import type { FileMetrics } from './types'
 
-export async function splitCSV<Options extends CommandOptions>(inputFile: Readable, options: Options): Promise<void> {
+export default async function<Options extends CommandOptions>(inputFile: Readable, options: Options): Promise<void> {
   const splitOptions = yaml.stringify(options)
   const {
     inputFilePath,
