@@ -10,7 +10,7 @@ import {
   toNumber,
 } from 'lodash-es'
 import type { JsonPrimitive } from 'type-fest'
-import { checkAndResolveFilePath } from './excel/helpers'
+import { checkAndResolveFilePath } from './helpers'
 
 export interface Arguments<T extends boolean = false> {
   bytesWritten?: number

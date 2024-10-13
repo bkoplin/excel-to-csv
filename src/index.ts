@@ -3,6 +3,12 @@ import { inspect } from 'node:util'
 import { Command } from '@commander-js/extra-typings'
 import type { Merge } from 'type-fest'
 
+import {
+  has,
+  isUndefined,
+} from 'lodash-es'
+import { filename } from 'pathe/utils'
+import ora from 'ora'
 import pkg from '../package.json'
 import {
   categoryOption,
@@ -12,7 +18,16 @@ import {
   maxFileSizeOption,
   writeHeaderOption,
 } from './arguments'
-import { checkAndResolveFilePath } from './excel/helpers'
+import {
+  checkAndResolveFilePath,
+  setRange,
+  setRangeIncludesHeader,
+  setSheetName,
+} from './helpers'
+import {
+  getWorkbook,
+  isOverlappingRange,
+} from './excel'
 // .passThroughOptions()
 
 // .action(async (argFilePath, options) => {})
@@ -39,12 +54,28 @@ program.command('excel')
   .addOption(makeFilePathOption('Excel'))
   .option('--sheet [sheet name]', 'the sheet containing the data to parse to CSV')
   .option('--range [range]', 'the range of cells to parse in the Excel file')
+  .option('-r, --range-includes-header', 'flag to indicate whether the range include the header row')
   .action(async (options, command) => {
     const filePath = await checkAndResolveFilePath('Excel', options.filePath as string)
     const programOptions = {
       ...command.opts(),
       ...command.optsWithGlobals(),
       filePath,
+    }
+    const wb = await getWorkbook(filePath)
+    if (isUndefined(options.sheet) || typeof programOptions.sheet !== 'string' || !has(wb.Sheets, programOptions.sheet!)) {
+      programOptions.sheet = await setSheetName(wb)
+    }
+    const ws = wb.Sheets[programOptions.sheet!]
+    if (typeof ws === 'undefined') {
+      ora(`The worksheet "${programOptions.sheet}" does not exist in the Excel file ${filename(filePath)}`).fail()
+      process.exit(1)
+    }
+    if (isUndefined(programOptions.range) || typeof programOptions.range !== 'string' || !isOverlappingRange(ws, programOptions)) {
+      programOptions.range = await setRange(wb, programOptions.sheet)
+    }
+    if (isUndefined(programOptions.rangeIncludesHeader)) {
+      programOptions.rangeIncludesHeader = await setRangeIncludesHeader(programOptions.range) as true
     }
     console.log(inspect({ excelOptions: programOptions }, { colors: true }))
   })
