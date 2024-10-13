@@ -33,21 +33,21 @@ import Papa from 'papaparse'
 import pkg from '../package.json'
 import { splitCSV } from './from-csv'
 
-const filePath = new Commander.Argument('<path>', 'the full path to the CSV file')
+const filePath = new Commander.Argument('[path]', 'the full path to the CSV file')
 const filterValuesOption = new Commander.Option(
   '-f, --filters [operators...]',
   `one or more pairs of colum headers and values to apply as a filter to each row as ${chalk.bgGrey(`${chalk.cyan('ColumnName')}${chalk.whiteBright(':')}${chalk.yellow('FilterValue')}`)}`,
 ).preset([] as string[][])
   .implies({ matchType: `all` })
 const categoryOption = new Commander.Option(
-  '-c, --category-field [columnTitle]',
+  '-c, --category-field [column title]',
   'the name of a column whose value will be used to create each separate file',
 )
   .preset('')
   .default(undefined)
-const writeHeaderOption = new Commander.Option('-h, --header', 'disable writing the CSV header to each file (if you include this flag, the header will be written separately, even if there is only one file)')
+  .default(true)
 const maxFileSizeOption = new Commander.Option(
-  '-s, --max-file-size-in-mb [NUMBER]',
+  '-s, --max-file-size-in-mb [number]',
   'the maximum size of each file in MB',
 )
   .preset('')
@@ -56,20 +56,20 @@ const maxFileSizeOption = new Commander.Option(
 const filterCondition = new Commander.Option('-m, --match-type', 'the type of match to use when filtering rows').choices([`all`, `any`, `none`])
   .preset(`all`)
 const excelCommand = new Commander.Command('excel').addArgument(filePath)
-  .option('--sheet [SHEET]', 'the sheet containing the data to parse to CSV')
-  .option('--range [RANGE]', 'the range of cells to parse in the Excel file')
+  .option('--sheet [sheet name]', 'the sheet containing the data to parse to CSV')
+  .option('--range [range]', 'the range of cells to parse in the Excel file')
   .addOption(filterValuesOption)
   .addOption(categoryOption)
   .addOption(filterCondition)
   .addOption(maxFileSizeOption)
-  .addOption(writeHeaderOption)
+  .option('-h, --header [write header]', 'enable writing the CSV header to each file (if you do not include this flag, the header will be written separately, even if there is only one file)')
   .action(async (argFilePath, options) => {
-    let inputFilePath = resolve(argFilePath)
     if (isNil(argFilePath)) {
       ora().fail(chalk.redBright(`No argument provided; you must provide a file path as the command argument`))
       process.exit()
     }
-    else if (!argFilePath.toLowerCase().endsWith('.xlsx')) {
+    let inputFilePath = resolve(argFilePath)
+    if (!argFilePath.toLowerCase().endsWith('.xlsx')) {
       ora().fail(`The file path provided (${chalk.cyanBright(`"${argFilePath}"`)}) does not end with ".xlsx." This program can only parse .xlsx files. ${chalk.yellowBright('You might need to quote the path if it contains spaces')}.`)
       process.exit()
     }
@@ -115,20 +115,20 @@ const program = new Commander.Command()
   .version(pkg.version)
   .name('csv-xlsx')
   .description('A CLI tool to parse Excel Files and split CSV files, includeing filtering and grouping into smaller files based on a column value')
-  .addCommand(excelCommand)
   .addArgument(filePath)
   .addOption(filterValuesOption)
   .addOption(categoryOption)
   .addOption(filterCondition)
   .addOption(maxFileSizeOption)
-  .addOption(writeHeaderOption)
+  .option('-h, --header [include]', 'enable writing the CSV header to each file (if you do not include this flag, the header will be written separately, even if there is only one file)', false)
+  .addCommand(excelCommand)
   .action(async (argFilePath, options) => {
-    let inputFilePath = resolve(argFilePath)
     if (isNil(argFilePath)) {
       ora().fail(chalk.redBright(`No argument provided; you must provide a file path as the command argument`))
       process.exit()
     }
-    else if (!argFilePath.toLowerCase().endsWith('.csv')) {
+    let inputFilePath = resolve(argFilePath)
+    if (!argFilePath.toLowerCase().endsWith('.csv')) {
       ora().fail(`The file path provided (${chalk.cyanBright(`"${argFilePath}"`)}) does not end with ".csv." This program can only parse .csv files. ${chalk.yellowBright('You might need to quote the path if it contains spaces')}.`)
       process.exit()
     }
