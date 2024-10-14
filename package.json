@@ -14,7 +14,7 @@
   "bugs": "https://github.com/bkoplin/excel-to-csv/issues",
   "keywords": [],
   "sideEffects": false,
-  "bin": "./src/index.ts",
+  "bin": "./bin/index.mjs",
   "scripts": {
     "dev": "esno ./src/index.ts",
     "clean": "rimraf ./dist/ ./exec/",
