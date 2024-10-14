@@ -4,7 +4,6 @@ import {
   createReadStream,
 } from 'node:fs'
 import type { ParsedPath } from 'node:path'
-import XLSX from 'xlsx'
 import {
   Command,
   Option,
@@ -21,6 +20,7 @@ import {
   isEmpty,
   isNull,
   isUndefined,
+  range as lRange,
 } from 'lodash-es'
 import { filename } from 'pathe/utils'
 import ora from 'ora'
@@ -123,13 +123,21 @@ program.command('excel')
       parsedRange,
       isRowInRange,
     } = extractRangeInfo(ws, range)
-    const json = XLSX.utils.sheet_to_json(ws, {
-      range,
-      raw: true,
-      header: 1,
-    })
-
-    const data = (json as JsonPrimitive[][]).filter((v, i) => !isEmpty(v) && !isUndefined(v) && isRowInRange(i))
+    const data: (JsonPrimitive | Date)[][] = []
+    const rowIndices = lRange(parsedRange.s.r, parsedRange.e.r + 1)
+    const colIndices = lRange(parsedRange.s.c, parsedRange.e.c + 1)
+    for (const rowIndex of rowIndices) {
+      const row: (JsonPrimitive | Date)[] = []
+      for (const colIndex of colIndices) {
+        // const cellRef = XLSX.utils.encode_cell({
+        //   r: rowIndex,
+        //   c: colIndex,
+        // })
+        const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
+        row.push(cell?.v ?? null)
+      }
+      data.push(row)
+    }
 
     const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
 
@@ -200,7 +208,7 @@ function generateCommandLineString(combinedOptions: Record<string | number, Json
     if (key in optionFlags) {
       if (!Array.isArray(value)) {
         if (isPrimitive(value)) {
-          acc += `${acc} \\\n${optionFlags[key]} ${JSON.stringify(value)}`
+          acc += ` \\\n${optionFlags[key]} ${JSON.stringify(value)}`
         }
         else if (isObject(value) && !isEmpty(value)) {
           acc += ` \\\n${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)

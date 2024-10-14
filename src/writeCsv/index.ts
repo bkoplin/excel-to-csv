@@ -44,6 +44,7 @@ import picocolors from 'picocolors'
 import yaml from 'yaml'
 // import type { CommandOptions } from '..'
 import { objectEntries } from '@antfu/utils'
+import fs from 'fs-extra'
 import type { FileMetrics } from './types'
 import type { GlobalOptions } from '@'
 
@@ -89,7 +90,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
       parser.pause()
       if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
         fields = results.data as string[]
-        headerFile.end(Papa.unparse([results.data]))
+        headerFile.end(Papa.unparse([formatHeaderValues(results)]))
       }
       else {
         const thisRow = zipToObject(fields, results.data)
@@ -169,9 +170,16 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
       const totalRows = sumBy(files, 'ROWS')
       const totalBytes = sumBy(files, 'BYTES')
       const totalFiles = files.length
+      const summaryString = yaml.stringify({
+        'TOTAL ROWS': totalRows,
+        'TOTAL BYTES': totalBytes,
+        'TOTAL FILES': totalFiles,
+        'OUTPUT FILES': parseResults,
+      })
+      fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
       if (writeHeaderOnEachFile) {
         for (const file of files) {
-          const header = Papa.unparse([fields])
+          const header = Papa.unparse([{ data: formatHeaderValues(fields) }])
           const openFile = await readFile(file.PATH, 'utf-8')
           await writeFile(file.PATH, `${header}\n${openFile}`, 'utf-8')
         }
@@ -256,4 +264,11 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
 
     return csvFileName
   }
+}
+function formatHeaderValues(results: Papa.ParseStepResult<string[]>): string[] {
+  return results.data.map((value, index, self) => {
+    const occurrencesAfter = self.slice(index + 1).filter(v => v === value).length
+    const occurrencesBefore = self.slice(0, index).filter(v => v === value).length + 1
+    return (occurrencesAfter + occurrencesBefore) > 1 ? `${value}_${occurrencesBefore}` : value
+  })
 }
