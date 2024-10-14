@@ -9,6 +9,8 @@ export async function getWorkbook(inputPath: string): Promise<XLSX.WorkBook> {
   return XLSX.read(buffer, {
     type: 'buffer',
     cellDates: true,
+    raw: true,
+    dense: true,
   })
 }
 
