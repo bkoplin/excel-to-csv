@@ -100,11 +100,12 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
           const csvRowLength = Buffer.from(csvOutput).length
           let category: string | undefined
           const rawCategory = categoryField in thisRow ? thisRow[categoryField as string] : undefined
-          if (isPrimitive(rawCategory))
+          if (isPrimitive(rawCategory) && !isEmpty(categoryField))
             category = isEmpty(rawCategory) ? 'EMPTY' : JSON.stringify(rawCategory)
-          else if (isNull(rawCategory))
+          else if (isNull(rawCategory) && !isEmpty(categoryField))
             category = 'NULL'
-          else category = undefined
+          else
+            category = undefined
           // const category = isString(thisRow[categoryField as string]) ? isEmpty(thisRow[categoryField as string]) ? 'EMPTY' : thisRow[categoryField as string] : isNull(thisRow[categoryField as string]) ? 'NULL' : undefined
           let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
 

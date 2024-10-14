@@ -91,20 +91,17 @@ program.command('excel')
     .default(undefined))
   .addOption(new Option('-r, --range-includes-header', 'flag to indicate whether the range include the header row').preset<boolean>(true))
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals<GlobalOptions>()
-    const localOptions = command.opts()
+    const globalOptions = command.optsWithGlobals < Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
     let {
       header,
       rowFilters,
-    } = globalOptions
-    let {
       range,
       sheet,
       rangeIncludesHeader,
       filePath,
-    } = localOptions
+    } = globalOptions
     filePath = await checkAndResolveFilePath('Excel', filePath)
-    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters)
+    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
     const wb = await getWorkbook(filePath)
     if (isUndefined(sheet) || typeof sheet !== 'string' || !wb.SheetNames.includes(sheet)) {
       sheet = await setSheetName(wb)
@@ -120,7 +117,7 @@ program.command('excel')
     if (isUndefined(rangeIncludesHeader)) {
       rangeIncludesHeader = await setRangeIncludesHeader(range) as true
     }
-    if (rangeIncludesHeader === false)
+    if (rangeIncludesHeader === false && header === true)
       header = false
     const {
       parsedRange,
@@ -134,11 +131,10 @@ program.command('excel')
 
     const data = (json as JsonPrimitive[][]).filter((v, i) => !isEmpty(v) && !isUndefined(v) && isRowInRange(i))
 
-    const csv = Papa.unparse(data, { header: localOptions.rangeIncludesHeader })
+    const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
 
     const combinedOptions = {
       ...globalOptions,
-      ...localOptions,
       parsedOutputFile,
       filePath,
       range,
@@ -164,19 +160,17 @@ program.command('csv')
   .description('Parse a CSV file')
   .addOption(makeFilePathOption('CSV'))
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals<GlobalOptions>()
-    const localOptions = command.opts()
-    const {
+    const globalOptions = command.optsWithGlobals<Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
+    let {
       header,
       rowFilters,
+      filePath,
     } = globalOptions
-    let { filePath } = localOptions
     filePath = await checkAndResolveFilePath('Excel', filePath)
-    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters)
+    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
     filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
     const combinedOptions = {
       ...globalOptions,
-      ...localOptions,
       parsedOutputFile,
       filePath,
     }
@@ -206,15 +200,15 @@ function generateCommandLineString(combinedOptions: Record<string | number, Json
     if (key in optionFlags) {
       if (!Array.isArray(value)) {
         if (isPrimitive(value)) {
-          return `${acc} ${optionFlags[key]} ${JSON.stringify(value)}`
+          acc += `${acc} \\\n${optionFlags[key]} ${JSON.stringify(value)}`
         }
-        else if (isObject(value) && !isNull(value) && !isEmpty(value)) {
-          return `${acc} ${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
+        else if (isObject(value) && !isEmpty(value)) {
+          acc += ` \\\n${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
             .join(' ')}`
         }
       }
       else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
-        return `${acc} ${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
+        acc += ` \\\n${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
       }
     }
     return acc

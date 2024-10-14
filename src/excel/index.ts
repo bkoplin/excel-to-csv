@@ -178,9 +178,10 @@ export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string | undef
   }
 }
 
-export async function setSheetName(wb: XLSX.WorkBook): Promise<string> {
+export async function setSheetName(wb: XLSX.WorkBook, sheetName?: string): Promise<string> {
   return select({
     message: 'Select the worksheet to parse',
+    default: sheetName ?? wb.SheetNames[1],
     choices: wb.SheetNames.map((value, i) => ({
       name: `${i + 1}) ${value}`,
       value,

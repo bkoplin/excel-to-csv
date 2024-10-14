@@ -6,6 +6,7 @@ import {
 } from '@commander-js/extra-typings'
 import chalk from 'chalk'
 import {
+  isEmpty,
   isNaN,
   toNumber,
 } from 'lodash-es'
@@ -51,10 +52,10 @@ export const filterValuesOption = new Option(
   `one or more pairs of colum headers and values to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}`,
 )
   .implies({ matchType: `all` })
-  .preset('')
   .default(undefined)
+  .preset({})
   .argParser((val, filters: Record<string, Array<JsonPrimitive>> = {}) => {
-    if (typeof val !== 'undefined') {
+    if (typeof val !== 'undefined' && !isEmpty(val)) {
       const [key, value] = (val || '').split(':').map(v => v.trim())
       if (key.length) {
         if (value.length) {
@@ -92,6 +93,11 @@ export const filterTypeOption = new Option('--match-type', 'the type of match to
   .preset<`all` | `any` | `none`>(`all`)
 
 export const writeHeaderOption = new Option(
-  '--no-header',
-  'disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
-)
+  '-h, --header [boolean]',
+  'enable/disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
+).default(true)
+  .argParser((val) => {
+    if (val === 'false')
+      return false
+    else return true
+  })
