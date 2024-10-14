@@ -11,6 +11,7 @@ import {
 } from '@commander-js/extra-typings'
 import type {
   JsonPrimitive,
+  JsonValue,
   Merge,
   SetFieldType,
   Simplify,
@@ -29,6 +30,11 @@ import {
 } from 'pathe'
 import fs from 'fs-extra'
 import yaml from 'yaml'
+import { objectEntries } from '@antfu/utils'
+import {
+  isObject,
+  objectify,
+} from 'radash'
 import pkg from '../package.json'
 import {
   categoryOption,
@@ -128,7 +134,7 @@ program.command('excel')
 
     const csv = Papa.unparse(data, { header: localOptions.rangeIncludesHeader })
 
-    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+    const combinedOptions = {
       ...globalOptions,
       ...localOptions,
       parsedOutputFile,
@@ -136,7 +142,12 @@ program.command('excel')
       range,
       sheet,
       header,
-    }))
+    }
+    const commandLineString = generateCommandLineString(combinedOptions, command)
+    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+      combinedOptions,
+      commandLineString,
+    }, { lineWidth: 1000 }))
     writeCsv(ReadStream.from(csv), {
       ...globalOptions,
       header,
@@ -159,12 +170,16 @@ program.command('csv')
     filePath = await checkAndResolveFilePath('Excel', filePath)
     const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters)
     filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
-    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+    const combinedOptions = {
       ...globalOptions,
       ...localOptions,
       parsedOutputFile,
       filePath,
-    }))
+    }
+    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+      combinedOptions,
+      commandLineString: generateCommandLineString(combinedOptions, command),
+    }, { lineWidth: 1000 }))
     writeCsv(createReadStream(filePath), {
       ...globalOptions,
       header,
@@ -178,3 +193,22 @@ for (const cmd of program.commands) {
 }
 program.parse(process.argv)
 export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFilePath: string }>
+
+function generateCommandLineString(combinedOptions: Record<string | number, JsonValue | undefined>, command: Command & { _name?: string }): string {
+  return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
+    const optionFlags = objectify(command.options, o => o.attributeName(), o => o.long)
+    if (typeof optionFlags[key] === 'string') {
+      if (!Array.isArray(value)) {
+        if (isObject(value)) {
+          return `${acc} ${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `"${k}":"${v}"`)
+            .join(' ')}`
+        }
+        return `${acc} ${optionFlags[key]} "${value}"`
+      }
+      else {
+        return `${acc} ${optionFlags[key]} ${value.join(' ')}`
+      }
+    }
+    return acc
+  }, command._name!)
+}

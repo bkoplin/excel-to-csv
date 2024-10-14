@@ -49,36 +49,25 @@ export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined
     // }
     // else
     if (!isRangeInDefaultRange(decodedInputRange)) {
-      ora(`You have selected a range (${chalk.redBright(`${range}`)}) that is completely outside the worksheet data range (${chalk.redBright(`${sheetRange}`)})`).fail()
+      ora(`You have selected a range (${chalk.yellowBright(`${range}`)}) that is completely outside the worksheet data range (${chalk.yellowBright(`${sheetRange}`)})`).fail()
       return false
     }
     else {
       const warningStrings = []
-      //   if (!rowsStartInSheetRange) {
-      if (decodedInputRange.s.c < decodedSheetRange.s.c)
-        warningStrings.push(`\n\tstarts at column ${chalk.redBright(XLSX.utils.encode_col(decodedInputRange.s.c))}, which is ${chalk.redBright(decodedSheetRange.s.c - decodedInputRange.s.c)} columns before the worksheet data range starts`)
-      else if (decodedInputRange.s.c > decodedSheetRange.s.c)
-        warningStrings.push(`\n\tstarts at column ${chalk.redBright(XLSX.utils.encode_col(decodedInputRange.s.c))}, which is ${chalk.redBright(decodedInputRange.s.c - decodedSheetRange.s.c)} columns after the worksheet data range starts`)
-        //   }
-        //   if (!colsEndInSheetRange) {
-      if (decodedInputRange.e.c < decodedSheetRange.s.c)
-        warningStrings.push(`\n\tends at column ${chalk.redBright(XLSX.utils.encode_col(decodedInputRange.e.c))}, which is ${chalk.redBright(decodedSheetRange.s.c - decodedInputRange.e.c)} columns before the worksheet data range ends`)
-      else if (decodedInputRange.e.c > decodedSheetRange.s.c)
-        warningStrings.push(`\n\tends at column ${chalk.redBright(XLSX.utils.encode_col(decodedInputRange.e.c))}, which is ${chalk.redBright(decodedInputRange.e.c - decodedSheetRange.s.c)} columns after the worksheet data range ends`)
-      if (decodedInputRange.s.r < decodedSheetRange.s.r)
-        warningStrings.push(`\n\tstarts at row ${chalk.redBright(decodedInputRange.s.r)}, which is ${chalk.redBright(decodedSheetRange.s.r - decodedInputRange.s.r)} rows before the worksheet data range starts`)
-      else if (decodedInputRange.s.r > decodedSheetRange.s.r)
-        warningStrings.push(`\n\tstarts at row ${chalk.redBright(decodedInputRange.s.r)}, which is ${chalk.redBright(decodedInputRange.s.r - decodedSheetRange.s.r)} rows after the worksheet data range starts`)
-      //   }
-      //   if (!rowsEndInSheetRange) {
-      if (decodedInputRange.e.r < decodedSheetRange.s.r)
-        warningStrings.push(`\n\tends at row ${chalk.redBright(decodedInputRange.e.r)}, which is ${chalk.redBright(decodedSheetRange.s.r - decodedInputRange.e.r)} rows before the worksheet data range ends`)
-      else if (decodedInputRange.e.r > decodedSheetRange.s.r)
-        warningStrings.push(`\n\tends at row ${chalk.redBright(decodedInputRange.e.r)}, which is ${chalk.redBright(decodedInputRange.e.r - decodedSheetRange.s.r)} rows after the worksheet data range ends`)
-      //   }
+      for (const termType of [['s', 'starts'], ['e', 'ends']] as const) {
+        for (const objType of [['r', 'row', 'encode_row'], ['c', 'column', 'encode_col']] as const) {
+          const inputVal = decodedInputRange[termType[0]][objType[0]]
+          const sheetVal = decodedSheetRange[termType[0]][objType[0]]
+          const encodedInputVal = XLSX.utils[objType[2]](inputVal)
+          const diffType = inputVal < sheetVal ? 'before' : 'after'
+          if (inputVal !== sheetVal) {
+            warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.yellowBright(encodedInputVal)}, which is ${chalk.yellowBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
+          }
+        }
+      }
       //   if (!colsStartInSheetRange) {
       //   }
-      ora(`You have input a range (${chalk.redBright(`${range}`)}) that includes less data than the worksheet data range (${`${chalk.redBright(sheetRange)}`}).\n\nYour input range:${warningStrings.join('')}`).warn()
+      ora(`You have input a range (${chalk.yellowBright(`${range}`)}) that includes less data than the worksheet data range (${`${chalk.yellowBright(sheetRange)}`}).\n\nYour input range:${warningStrings.join('')}\n\n`).warn()
       return true
     }
   }
