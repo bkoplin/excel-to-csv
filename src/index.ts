@@ -174,9 +174,8 @@ program.command('csv')
       rowFilters,
       filePath,
     } = globalOptions
-    filePath = await checkAndResolveFilePath('Excel', filePath)
-    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
     filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
+    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
     const combinedOptions = {
       ...globalOptions,
       parsedOutputFile,
