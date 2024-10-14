@@ -25,6 +25,7 @@ import {
   findIndex,
   findLast,
   isEmpty,
+  isNil,
   isUndefined,
   last,
   maxBy,
@@ -93,8 +94,8 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
         if (isEmpty(filters) || filtersArray.every(([field, value]) => value.includes(thisRow[field]) && matchType === 'all') || filtersArray.some(([field, value]) => value.includes(thisRow[field]) && matchType === 'any') || filtersArray.every(([field, value]) => !value.includes(thisRow[field]) && matchType === 'none')) {
           const csvOutput = Papa.unparse([results.data])
           const csvRowLength = Buffer.from(csvOutput).length
-          const category = thisRow[categoryField as string] as string | undefined
-          let activeFileObject = (typeof category === 'undefined' ? last(files) : findLast(files, a => a.CATEGORY === category))
+          const category = thisRow[categoryField as string] as string | undefined | null
+          let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
 
           if (isUndefined(activeFileObject)) {
             const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
@@ -102,24 +103,11 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
               fileNumber: defaultFileNumber,
               category,
             })
-            const defaultFileObject = {
-              BYTES: csvRowLength,
-              FILENUM: (maxFileSizeInMb ? 1 : undefined),
-              ROWS: 1,
-              CATEGORY: category,
-              PATH: format({
-                ...parsedOutputFile,
-                name: generateCsvFileName({
-                  fileNumber: defaultFileNumber,
-                  category,
-                }),
-              }),
-            }
             activeFileObject = {
               BYTES: csvRowLength,
               FILENUM: (maxFileSizeInMb ? 1 : undefined),
               ROWS: 1,
-              CATEGORY: category,
+              CATEGORY: category!,
               PATH: format({
                 ...parsedOutputFile,
                 name: generateCsvFileName({
@@ -130,26 +118,25 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
             }
             spinner.text = `CREATED ${picocolors.yellow(`"${defaultCsvFileName}"`)}`
             await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
-            files.push(defaultFileObject)
+            files.push(activeFileObject)
           }
           else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-            files.push(activeFileObject)
             spinner.text = `FINISHED WITH ${picocolors.yellow(`"${filename(activeFileObject.PATH)}"`)}`
-            const fileNumber = activeFileObject.FILENUM! + 1
-            activeFileObject = {
+            const newActiveFileObject = {
               BYTES: csvRowLength,
-              FILENUM: fileNumber,
+              FILENUM: activeFileObject.FILENUM! + 1,
               ROWS: 1,
               PATH: format({
                 ...parsedOutputFile,
                 name: generateCsvFileName({
-                  fileNumber,
+                  fileNumber: activeFileObject.FILENUM! + 1,
                   category,
                 }),
               }),
-              CATEGORY: category,
+              CATEGORY: category!,
             }
-            await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+            await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+            files.push(newActiveFileObject)
           }
           else {
             activeFileObject.BYTES += csvRowLength
@@ -245,11 +232,11 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
     category,
   }: {
     fileNumber?: number
-    category?: string
+    category?: string | null
   } = {}): string {
     let csvFileName = parsedOutputFile.name
 
-    if (typeof category !== 'undefined')
+    if (typeof category !== 'undefined' && category !== null)
       csvFileName += ` ${upperFirst(camelCase(category))}`
     if (typeof fileNumber !== 'undefined')
       csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`

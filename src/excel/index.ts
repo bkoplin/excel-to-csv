@@ -65,9 +65,10 @@ export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined
           }
         }
       }
+      if (warningStrings.length)
+        ora(`You have input a range (${chalk.yellowBright(`${range}`)}) that includes less data than the worksheet data range (${`${chalk.yellowBright(sheetRange)}`}).\n\nYour input range:${warningStrings.join('')}\n\n`).warn()
       //   if (!colsStartInSheetRange) {
       //   }
-      ora(`You have input a range (${chalk.yellowBright(`${range}`)}) that includes less data than the worksheet data range (${`${chalk.yellowBright(sheetRange)}`}).\n\nYour input range:${warningStrings.join('')}\n\n`).warn()
       return true
     }
   }
