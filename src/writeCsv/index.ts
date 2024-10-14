@@ -24,41 +24,48 @@ import {
 import fs from 'fs-extra'
 import {
   camelCase,
-  delay,
   escape,
   findIndex,
   findLast,
+  isEmpty,
   isUndefined,
   last,
   maxBy,
-  noop,
   padStart,
   sumBy,
   upperFirst,
 } from 'lodash-es'
 import Papa from 'papaparse'
-import type {
-  JsonPrimitive,
-  SetRequired,
-} from 'type-fest'
+import type { JsonPrimitive } from 'type-fest'
 import ora from 'ora'
 import picocolors from 'picocolors'
 import yaml from 'yaml'
 import dayjs from 'dayjs'
-import type { CommandOptions } from '..'
+// import type { CommandOptions } from '..'
 import type { FileMetrics } from './types'
+
+interface CommandOptions {
+  rowFilters?: true | Record<string, JsonPrimitive[]> | undefined
+  categoryField?: string | true | undefined
+  matchType: true | 'all' | 'any' | 'none'
+  fileSize?: number | undefined
+  header: boolean
+  inputFilePath: string
+  range: string
+  rangeIncludesHeader: boolean
+}
 
 export default async function<Options extends CommandOptions>(inputFile: Readable, options: Options): Promise<void> {
   const splitOptions = yaml.stringify(options)
   const {
     inputFilePath,
     categoryField = '',
-    maxFileSizeInMb,
+    fileSize: maxFileSizeInMb,
     matchType,
-    filters = [],
+    rowFilters: filters = {},
   } = options
   // const filters = options.filters ?? []
-  const writeHeaderOnEachFile = options.header
+  const writeHeaderOnEachFile = options.rangeIncludesHeader ? options.header : false
   const spinner = ora({
     hideCursor: false,
     discardStdin: false,
@@ -68,7 +75,7 @@ export default async function<Options extends CommandOptions>(inputFile: Readabl
   spinner.start(`Parsing ${picocolors.cyan(filename(inputFilePath))}`)
   const parsedOutputFile = omit(parsedInputFile, ['base'])
   parsedOutputFile.ext = '.csv'
-  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (filters.length ? ' FILTERED' : ''))
+  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
   // parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
   fs.emptyDirSync(parsedOutputFile.dir)
   // ensureDirSync(parsedOutputFile.dir)
@@ -88,17 +95,18 @@ export default async function<Options extends CommandOptions>(inputFile: Readabl
       else {
         const thisRow = zipToObject(fields, results.data)
         parsedLines++
-        if (filters.length === 0 || (filters.every(([field, value]) => thisRow[field] === value) && matchType === 'all') || (filters.some(([field, value]) => thisRow[field] === value) && matchType === 'any') || (filters.every(([field, value]) => thisRow[field] !== value) && matchType === 'none')) {
+        const filtersArray = Object.entries(filters as Record<string, JsonPrimitive[]>)
+        if (isEmpty(filters) || filtersArray.every(([field, value]) => value.includes(thisRow[field]) && matchType === 'all') || filtersArray.some(([field, value]) => value.includes(thisRow[field]) && matchType === 'any') || filtersArray.every(([field, value]) => !value.includes(thisRow[field]) && matchType === 'none')) {
           const csvOutput = Papa.unparse([results.data])
           const csvRowLength = Buffer.from(csvOutput).length
-          const category = thisRow[categoryField] as string | undefined
+          const category = thisRow[categoryField as string] as string | undefined
 
-          const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined) as Options['maxFileSizeInMb'] extends number ? number : undefined
+          const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
           const defaultCsvFileName = generateCsvFileName({
             fileNumber: defaultFileNumber,
             category,
           })
-          const defaultFileObject: Options['maxFileSizeInMb'] extends number ? SetRequired<FileMetrics, 'FILENUM'> : FileMetrics = {
+          const defaultFileObject = {
             BYTES: csvRowLength,
             FILENUM: defaultFileNumber,
             ROWS: 1,
@@ -112,13 +120,11 @@ export default async function<Options extends CommandOptions>(inputFile: Readabl
           if (isUndefined(activeFileObject)) {
             activeFileObject = defaultFileObject
             files.push(defaultFileObject)
-            spinner.text = `Created ${picocolors.yellow(`"${defaultCsvFileName}"`)}`
-            await delay(noop, 750)
+            spinner.text = `CREATED ${picocolors.yellow(`"${defaultCsvFileName}"`)}`
           }
           else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && isNumber(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
             files.push(activeFileObject)
             spinner.text = `FINISHED WITH ${picocolors.yellow(`"${filename(activeFileObject.PATH)}"`)}`
-            await delay(noop, 750)
             const fileNumber = activeFileObject.FILENUM! + 1
             const csvFileName = generateCsvFileName({
               fileNumber,
@@ -140,7 +146,7 @@ export default async function<Options extends CommandOptions>(inputFile: Readabl
             activeFileObject.ROWS += 1
             const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
             files[currentFileIndex] = activeFileObject
-            spinner.text = `Writing ${picocolors.yellow(`"${parse(activeFileObject.PATH).base}"`)}`
+            spinner.text = `WRITING ${picocolors.yellow(`"${parse(activeFileObject.PATH).base}"`)}`
           }
 
           await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
