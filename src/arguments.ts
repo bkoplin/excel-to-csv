@@ -9,7 +9,10 @@ import {
   isNaN,
   toNumber,
 } from 'lodash-es'
-import type { JsonPrimitive } from 'type-fest'
+import type {
+  EmptyObject,
+  JsonPrimitive,
+} from 'type-fest'
 import { checkAndResolveFilePath } from './helpers'
 
 export interface Arguments<T extends boolean = false> {
@@ -42,14 +45,17 @@ export interface Arguments<T extends boolean = false> {
 export const filePathArgument = new Argument('[path]', 'the full path to the CSV file')
   .argParser(async (value: string | undefined) => await checkAndResolveFilePath('CSV', value))
 
-export function makeFilePathOption(parserType: 'Excel' | 'CSV'): Option<'--file-path [path]', undefined, undefined, string, false, undefined> {
-  return new Option('--file-path [path]', `the full path to the ${chalk.yellowBright(parserType)} file`)
+export function makeFilePathOption(parserType: 'Excel' | 'CSV'): Option<'--file-path [path]', 'Excel' | 'CSV', string, undefined, false, undefined> {
+  return new Option('--file-path [path]', `the full path to the ${chalk.yellowBright(parserType)} file`).default('CSV')
+    .preset('' as 'Excel' | 'CSV')
 }
 export const filterValuesOption = new Option(
   '--row-filters [operators...]',
   `one or more pairs of colum headers and values to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}`,
 )
   .implies({ matchType: `all` })
+  .preset < Record<string, Array<JsonPrimitive>>>({})
+  .default<EmptyObject>({})
   .argParser((val, filters: Record<string, Array<JsonPrimitive>> = {}) => {
     const [key, value] = val.split(':').map(v => v.trim())
     if (key.length) {
@@ -75,15 +81,16 @@ export const categoryOption = new Option(
   'the name of a column whose value will be used to create each separate file',
 )
   .default(undefined as unknown as string | undefined)
+  .preset('')
 export const maxFileSizeOption = new Option(
   '--file-size [number]',
   'the maximum size of each file in MB (if not set, the files will not be split by size)',
-)
-  .default(undefined)
+).preset(0)
   .argParser((val): number | undefined => typeof val === 'undefined' || val === null || isNaN(toNumber(val)) ? undefined : toNumber(val))
 export const filterTypeOption = new Option('--match-type', 'the type of match to use when filtering rows')
   .choices([`all`, `any`, `none`] as const)
-  .default(`all` as const)
+  .default<`all`>(`all`)
+  .preset<`all` | `any` | `none`>(`all`)
 
 export const writeHeaderOption = new Option(
   '--no-header',
