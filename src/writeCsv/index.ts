@@ -179,7 +179,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
       fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
       if (writeHeaderOnEachFile) {
         for (const file of files) {
-          const header = Papa.unparse([{ data: formatHeaderValues(fields) }])
+          const header = Papa.unparse([formatHeaderValues({ data: fields })])
           const openFile = await readFile(file.PATH, 'utf-8')
           await writeFile(file.PATH, `${header}\n${openFile}`, 'utf-8')
         }

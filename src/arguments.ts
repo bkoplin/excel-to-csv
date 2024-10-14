@@ -58,6 +58,8 @@ export const filterValuesOption = new Option(
     if (typeof val !== 'undefined' && !isEmpty(val)) {
       const [key, value] = (val || '').split(':').map(v => v.trim())
       if (key.length) {
+        if (!filters[key])
+          filters[key] = []
         if (value.length) {
           if (!isNaN(toNumber(value))) {
             filters[key] = [...filters[key], toNumber(value)]
