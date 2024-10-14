@@ -19,6 +19,7 @@ import type {
 import Papa from 'papaparse'
 import {
   isEmpty,
+  isNull,
   isUndefined,
 } from 'lodash-es'
 import { filename } from 'pathe/utils'
@@ -33,6 +34,7 @@ import yaml from 'yaml'
 import { objectEntries } from '@antfu/utils'
 import {
   isObject,
+  isPrimitive,
   objectify,
 } from 'radash'
 import pkg from '../package.json'
@@ -144,10 +146,12 @@ program.command('excel')
       header,
     }
     const commandLineString = generateCommandLineString(combinedOptions, command)
-    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+    fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
       combinedOptions,
       commandLineString,
     }, { lineWidth: 1000 }))
+    parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
+    fs.ensureDirSync(parsedOutputFile.dir)
     writeCsv(ReadStream.from(csv), {
       ...globalOptions,
       header,
@@ -176,10 +180,12 @@ program.command('csv')
       parsedOutputFile,
       filePath,
     }
-    fs.outputFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} OPTIONS.yaml`), yaml.stringify({
+    fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
       combinedOptions,
       commandLineString: generateCommandLineString(combinedOptions, command),
     }, { lineWidth: 1000 }))
+    parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
+    fs.ensureDirSync(parsedOutputFile.dir)
     writeCsv(createReadStream(filePath), {
       ...globalOptions,
       header,
@@ -196,17 +202,19 @@ export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFileP
 
 function generateCommandLineString(combinedOptions: Record<string | number, JsonValue | undefined>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
-    const optionFlags = objectify(command.options, o => o.attributeName(), o => o.long)
-    if (typeof optionFlags[key] === 'string') {
+    const optionFlags = objectify([...command.options, ...command.parent?.options ?? []], o => o.attributeName(), o => o.long)
+    if (key in optionFlags) {
       if (!Array.isArray(value)) {
-        if (isObject(value)) {
-          return `${acc} ${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `"${k}":"${v}"`)
+        if (isPrimitive(value)) {
+          return `${acc} ${optionFlags[key]} ${JSON.stringify(value)}`
+        }
+        else if (isObject(value) && !isNull(value) && !isEmpty(value)) {
+          return `${acc} ${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
             .join(' ')}`
         }
-        return `${acc} ${optionFlags[key]} "${value}"`
       }
-      else {
-        return `${acc} ${optionFlags[key]} ${value.join(' ')}`
+      else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
+        return `${acc} ${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
       }
     }
     return acc

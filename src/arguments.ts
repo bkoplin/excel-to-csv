@@ -9,10 +9,7 @@ import {
   isNaN,
   toNumber,
 } from 'lodash-es'
-import type {
-  EmptyObject,
-  JsonPrimitive,
-} from 'type-fest'
+import type { JsonPrimitive } from 'type-fest'
 import { checkAndResolveFilePath } from './helpers'
 
 export interface Arguments<T extends boolean = false> {
@@ -54,27 +51,29 @@ export const filterValuesOption = new Option(
   `one or more pairs of colum headers and values to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}`,
 )
   .implies({ matchType: `all` })
-  .preset < Record<string, Array<JsonPrimitive>>>({})
-  .default<EmptyObject>({})
+  .preset('')
+  .default(undefined)
   .argParser((val, filters: Record<string, Array<JsonPrimitive>> = {}) => {
-    const [key, value] = val.split(':').map(v => v.trim())
-    if (key.length) {
-      if (value.length) {
-        if (!isNaN(toNumber(value))) {
-          filters[key] = [...filters[key], toNumber(value)]
-        }
-        else if (value === 'true' || value === 'false') {
-          filters[key] = [...filters[key], value === 'true']
+    if (typeof val !== 'undefined') {
+      const [key, value] = (val || '').split(':').map(v => v.trim())
+      if (key.length) {
+        if (value.length) {
+          if (!isNaN(toNumber(value))) {
+            filters[key] = [...filters[key], toNumber(value)]
+          }
+          else if (value === 'true' || value === 'false') {
+            filters[key] = [...filters[key], value === 'true']
+          }
+          else {
+            filters[key] = [...filters[key], value]
+          }
         }
         else {
-          filters[key] = [...filters[key], value]
+          filters[key] = [...filters[key], true]
         }
       }
-      else {
-        filters[key] = [...filters[key], true]
-      }
+      return filters
     }
-    return filters
   })
 export const categoryOption = new Option(
   '-c, --category-field [column title]',

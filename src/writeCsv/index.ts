@@ -10,25 +10,29 @@ import {
   format,
   join,
   parse,
+  relative,
 } from 'pathe'
 import { filename } from 'pathe/utils'
 import Table from 'table-layout'
 import numbro from 'numbro'
 import {
   alphabetical,
+  isPrimitive,
   pick,
   zipToObject,
 } from 'radash'
 import {
   camelCase,
-  escape,
+  delay,
   findIndex,
   findLast,
   isEmpty,
   isNil,
+  isNull,
   isUndefined,
   last,
   maxBy,
+  noop,
   padStart,
   sumBy,
   upperFirst,
@@ -94,7 +98,14 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
         if (isEmpty(filters) || filtersArray.every(([field, value]) => value.includes(thisRow[field]) && matchType === 'all') || filtersArray.some(([field, value]) => value.includes(thisRow[field]) && matchType === 'any') || filtersArray.every(([field, value]) => !value.includes(thisRow[field]) && matchType === 'none')) {
           const csvOutput = Papa.unparse([results.data])
           const csvRowLength = Buffer.from(csvOutput).length
-          const category = thisRow[categoryField as string] as string | undefined | null
+          let category: string | undefined
+          const rawCategory = categoryField in thisRow ? thisRow[categoryField as string] : undefined
+          if (isPrimitive(rawCategory))
+            category = isEmpty(rawCategory) ? 'EMPTY' : JSON.stringify(rawCategory)
+          else if (isNull(rawCategory))
+            category = 'NULL'
+          else category = undefined
+          // const category = isString(thisRow[categoryField as string]) ? isEmpty(thisRow[categoryField as string]) ? 'EMPTY' : thisRow[categoryField as string] : isNull(thisRow[categoryField as string]) ? 'NULL' : undefined
           let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
 
           if (isUndefined(activeFileObject)) {
@@ -122,6 +133,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
           }
           else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
             spinner.text = `FINISHED WITH ${picocolors.yellow(`"${filename(activeFileObject.PATH)}"`)}`
+            await delay(noop, 1500)
             const newActiveFileObject = {
               BYTES: csvRowLength,
               FILENUM: activeFileObject.FILENUM! + 1,
@@ -173,7 +185,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
           },
           {
             name: 'PATH',
-            get: cellValue => picocolors.cyan(escape(cellValue as string)),
+            get: cellValue => picocolors.cyan(join('../', relative(parsedInputFile.dir, cellValue as string))),
           },
           {
             name: 'ROWS',
