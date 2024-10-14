@@ -1,461 +1,224 @@
-import * as os from 'node:os'
-import * as fs from 'node:fs'
-import { basename, join, parse, relative, sep } from 'node:path'
-import { PassThrough } from 'node:stream'
-import type { ParsedPath } from 'node:path/posix'
-import inquirerFileSelector from 'inquirer-file-selector'
-import * as XLSX from 'xlsx'
+#!/usr/bin/env esno
+import {
+  ReadStream,
+  createReadStream,
+} from 'node:fs'
+import type { ParsedPath } from 'node:path'
+import {
+  Command,
+  Option,
+} from '@commander-js/extra-typings'
+import type {
+  JsonPrimitive,
+  JsonValue,
+  Merge,
+  SetFieldType,
+  Simplify,
+} from 'type-fest'
 import Papa from 'papaparse'
-import { ceil, curryRight, inRange, padStart, range, snakeCase } from 'lodash-es'
-import type { JsonValue } from 'type-fest'
-import dayjs from 'dayjs'
-import colors from 'picocolors'
-import { confirm, expand, input, number, select } from '@inquirer/prompts'
-import { Separator } from '@inquirer/core'
-import { emptyDirSync, ensureDirSync } from 'fs-extra'
-import fg from 'fast-glob'
-import { isUndefined } from '@antfu/utils'
-import yoctoSpinner from 'yocto-spinner'
-import { counting } from 'radash'
+import {
+  isEmpty,
+  isNull,
+  isUndefined,
+  range as lRange,
+} from 'lodash-es'
+import { filename } from 'pathe/utils'
+import ora from 'ora'
 
-XLSX.set_fs(fs)
+import {
+  join,
+  parse,
+} from 'pathe'
+import fs from 'fs-extra'
+import yaml from 'yaml'
+import { objectEntries } from '@antfu/utils'
+import {
+  isObject,
+  isPrimitive,
+  objectify,
+} from 'radash'
+import pkg from '../package.json'
+import {
+  categoryOption,
+  filterTypeOption,
+  filterValuesOption,
+  makeFilePathOption,
+  maxFileSizeOption,
+  writeHeaderOption,
+} from './arguments'
+import {
+  checkAndResolveFilePath,
+  generateParsedCsvFilePath,
+} from './helpers'
+import {
+  extractRangeInfo,
+  getWorkbook,
+  isOverlappingRange,
+  setRange,
+  setRangeIncludesHeader,
+  setSheetName,
+} from './excel'
+import writeCsv from './writeCsv'
 
-const spinner = yoctoSpinner({ text: 'Parsing…' })
+const program = new Command('parse').version(pkg.version)
 
-export interface Arguments {
-  filePath?: string
-  sheetName?: string
-  range?: string
+  .description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
+
+  .showSuggestionAfterError(true)
+  .configureHelp({
+    sortOptions: true,
+    sortSubcommands: true,
+    showGlobalOptions: true,
+  })
+
+  .addOption(filterValuesOption)
+  .addOption(categoryOption)
+  .addOption(filterTypeOption)
+  .addOption(maxFileSizeOption)
+  .addOption(writeHeaderOption)
+
+export type GlobalOptions = Simplify<SetFieldType<ReturnType<typeof program.opts>, 'fileSize', number | undefined> & {
+  inputFilePath: string
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+}>
+
+program.command('excel')
+  .description('Parse an Excel file')
+  .addOption(makeFilePathOption('Excel'))
+  .addOption(new Option('--sheet [sheet name]', 'the sheet containing the data to parse to CSV').default(undefined)
+    .preset(''))
+  .addOption(new Option('--range [range]', 'the range of cells to parse in the Excel file').preset('')
+    .default(undefined))
+  .addOption(new Option('-r, --range-includes-header', 'flag to indicate whether the range include the header row').preset<boolean>(true))
+  .action(async (options, command) => {
+    const globalOptions = command.optsWithGlobals < Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
+    let {
+      header,
+      rowFilters,
+      range,
+      sheet,
+      rangeIncludesHeader,
+      filePath,
+    } = globalOptions
+    filePath = await checkAndResolveFilePath('Excel', filePath)
+    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
+    const wb = await getWorkbook(filePath)
+    if (isUndefined(sheet) || typeof sheet !== 'string' || !wb.SheetNames.includes(sheet)) {
+      sheet = await setSheetName(wb)
+    }
+    const ws = wb.Sheets[sheet!]
+    if (typeof ws === 'undefined') {
+      ora(`The worksheet "${sheet}" does not exist in the Excel file ${filename(filePath)}`).fail()
+      process.exit(1)
+    }
+    if (!isOverlappingRange(ws, range)) {
+      range = await setRange(wb, sheet)
+    }
+    if (isUndefined(rangeIncludesHeader)) {
+      rangeIncludesHeader = await setRangeIncludesHeader(range) as true
+    }
+    if (rangeIncludesHeader === false && header === true)
+      header = false
+    const {
+      parsedRange,
+      isRowInRange,
+    } = extractRangeInfo(ws, range)
+    const data: (JsonPrimitive | Date)[][] = []
+    const rowIndices = lRange(parsedRange.s.r, parsedRange.e.r + 1)
+    const colIndices = lRange(parsedRange.s.c, parsedRange.e.c + 1)
+    for (const rowIndex of rowIndices) {
+      const row: (JsonPrimitive | Date)[] = []
+      for (const colIndex of colIndices) {
+        // const cellRef = XLSX.utils.encode_cell({
+        //   r: rowIndex,
+        //   c: colIndex,
+        // })
+        const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
+        row.push(cell?.v ?? null)
+      }
+      data.push(row)
+    }
+
+    const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
+
+    const combinedOptions = {
+      ...globalOptions,
+      parsedOutputFile,
+      filePath,
+      range,
+      sheet,
+      header,
+    }
+    const commandLineString = generateCommandLineString(combinedOptions, command)
+    fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
+      combinedOptions,
+      commandLineString,
+    }, { lineWidth: 1000 }))
+    parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
+    fs.ensureDirSync(parsedOutputFile.dir)
+    writeCsv(ReadStream.from(csv), {
+      ...globalOptions,
+      header,
+      inputFilePath: filePath,
+      parsedOutputFile,
+    })
+  })
+
+program.command('csv')
+  .description('Parse a CSV file')
+  .addOption(makeFilePathOption('CSV'))
+  .action(async (options, command) => {
+    const globalOptions = command.optsWithGlobals<Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
+    let {
+      header,
+      rowFilters,
+      filePath,
+    } = globalOptions
+    filePath = await checkAndResolveFilePath('Excel', filePath)
+    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
+    filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
+    const combinedOptions = {
+      ...globalOptions,
+      parsedOutputFile,
+      filePath,
+    }
+    fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
+      combinedOptions,
+      commandLineString: generateCommandLineString(combinedOptions, command),
+    }, { lineWidth: 1000 }))
+    parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
+    fs.ensureDirSync(parsedOutputFile.dir)
+    writeCsv(createReadStream(filePath), {
+      ...globalOptions,
+      header,
+      inputFilePath: filePath,
+      parsedOutputFile,
+    })
+  })
+
+for (const cmd of program.commands) {
+  cmd.option('-d, --debug')
 }
-export async function parseArguments(args: {
-  filePath?: string | undefined
-  sheetName?: string | undefined
-  range?: string | undefined
-}): Promise<void> {
-  if (isUndefined(args.filePath)) {
-    const { filePath, dirName } = await getExcelFilePath()
-    args.filePath = filePath
-    spinner.text = `Parsing ${colors.cyan(`"./${basename(dirName)}/${relative(dirName, filePath)}"`)}\n`
-  }
-  else {
-    spinner.text = `Parsing ${colors.cyan(`"${args.filePath}"`)}...\n`
-  }
+program.parse(process.argv)
+export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFilePath: string }>
 
-  const { SheetNames, Sheets } = XLSX.readFile(args.filePath, {
-    raw: true,
-    cellDates: true,
-    dense: true,
-  })
-  let csvSize = fs.statSync(args.filePath).size
-  if (isUndefined(args.sheetName) || !SheetNames.includes(args.sheetName)) {
-    const answer = await chooseSheetToParse(SheetNames)
-    args.sheetName = answer
-  }
-  if (isUndefined(args.range)) {
-    const answer = await getWorksheetRange(Sheets, args)
-    args.range = answer
-  }
-  const parsedFile = parse(args.filePath)
-  const rawSheet = Sheets[args.sheetName]
-  const decodedRange = XLSX.utils.decode_range(args.range)
-  const rangeIncludesHeader = await confirm({
-    message: `Does range ${colors.cyan(`"${args.range}"`)} include the header row?`,
-    default: true,
-  })
-  const columnIndices = range(decodedRange.s.c, decodedRange.e.c + 1)
-  const rowIndices = range(decodedRange.s.r, decodedRange.e.r + 1)
-  let splitWorksheet = false
-  let outputFilePath = `${parsedFile.dir}/${parsedFile.name}_${args.sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}`
-  const csvSizeInMegabytes = ceil(csvSize / 1000000, 2)
-  if (csvSizeInMegabytes > 5) {
-    splitWorksheet = await confirm({
-      message: `The size of the resulting CSV file could exceed ${colors.yellow(`${csvSizeInMegabytes * 4}Mb`)}. Would you like to split the output into multiple CSVs?`,
-      default: false,
-    })
-    if (splitWorksheet) {
-      ensureDirSync(join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss')))
-      emptyDirSync(join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss')))
-      outputFilePath = join(parsedFile.dir, dayjs().format('YYYY.MM.DD HH.mm.ss'), `${parsedFile.name} ${args.sheetName}`)
-      const tempCSVSize = await number({
-        message: 'Size of output CSV files (in Mb):',
-        default: csvSizeInMegabytes,
-        min: 1,
-        max: csvSizeInMegabytes * 4,
-      })
-      csvSize = tempCSVSize * 1000000
-    }
-  }
-  let fileNum = 1
-  let writeStream: fs.WriteStream
-  const outputFiles: string[] = []
-  let newFileName = `${outputFilePath}.csv`
-  if (splitWorksheet) {
-    newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
-    writeStream = fs.createWriteStream(newFileName, 'utf-8')
-  }
-  else {
-    writeStream = fs.createWriteStream(newFileName, 'utf-8')
-  }
-
-  const pass = new PassThrough()
-  pass.on('data', (chunk: Blob) => {
-    pass.pause()
-    const { text, isLastRow } = JSON.parse(chunk.toString()) as {
-      text: string
-      isLastRow: boolean
-    }
-    const streamWriteResult = writeStream.write(text)
-    if (splitWorksheet === false) {
-      if (streamWriteResult === false) {
-        writeStream.once('drain', () => {
-          if (isLastRow) {
-            outputFiles.push(newFileName)
-            finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
-          }
-          else {
-            pass.resume()
-          }
-        })
-      }
-      else {
-        if (isLastRow) {
-          outputFiles.push(newFileName)
-          finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
+function generateCommandLineString(combinedOptions: Record<string | number, JsonValue | undefined>, command: Command & { _name?: string }): string {
+  return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
+    const optionFlags = objectify([...command.options, ...command.parent?.options ?? []], o => o.attributeName(), o => o.long)
+    if (key in optionFlags) {
+      if (!Array.isArray(value)) {
+        if (isPrimitive(value)) {
+          acc += ` \\\n${optionFlags[key]} ${JSON.stringify(value)}`
         }
-        else {
-          pass.resume()
+        else if (isObject(value) && !isEmpty(value)) {
+          acc += ` \\\n${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
+            .join(' ')}`
         }
       }
-    }
-    else if (streamWriteResult === false) {
-      writeStream.once('drain', () => {
-        if (isLastRow) {
-          outputFiles.push(newFileName)
-          finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
-        }
-        else if (writeStream.bytesWritten < csvSize) {
-          pass.resume()
-        }
-        else {
-          writeStream.destroy()
-          newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
-          outputFiles.push(newFileName)
-          fileNum += 1
-          writeStream = fs.createWriteStream(newFileName, 'utf-8')
-          writeStream.on('error', (err) => {
-            spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
-            pass.destroy()
-          })
-          pass.resume()
-        }
-      })
-    }
-    else {
-      if (isLastRow) {
-        outputFiles.push(newFileName)
-        finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet, outputFiles)
-      }
-      else if (writeStream.bytesWritten < csvSize) {
-        pass.resume()
-      }
-      else {
-        writeStream.destroy()
-        newFileName = `${outputFilePath}_${padStart(`${fileNum}`, 3, '0')}.csv`
-        outputFiles.push(newFileName)
-        fileNum += 1
-        writeStream = fs.createWriteStream(newFileName, 'utf-8')
-        writeStream.on('error', (err) => {
-          spinner.error(`There was an error writing the CSV file: ${colors.red(err.message)}`)
-          pass.destroy()
-        })
-        pass.resume()
+      else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
+        acc += ` \\\n${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
       }
     }
-  })
-
-  rowIndices.forEach((rowIdx) => {
-    let rowdata: JsonValue[] = []
-    columnIndices.forEach((colIdx) => {
-      const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
-      rowdata.push((currentCell?.v ?? null) as string)
-    })
-    const isLastRow = rowIdx === decodedRange.e.r
-    if (rowIdx === decodedRange.s.r) {
-      if (rangeIncludesHeader) {
-        const rowValCounts = counting(rowdata, v => v)
-        rowdata = rowdata.reverse().map((v): string => {
-          if (rowValCounts[v] > 1) {
-            rowValCounts[v] -= 1
-            const fieldName = `${v} ${rowValCounts[v]}`
-            return snakeCase(fieldName)
-          }
-          return snakeCase(v)
-        })
-        rowdata = rowdata.reverse()
-        rowdata.push('source_file', 'source_sheet', 'source_range')
-      }
-      const csv = Papa.unparse([rowdata])
-      if (splitWorksheet) {
-        const headerFilePath = `${outputFilePath}_HEADER.csv`
-        outputFiles.push(headerFilePath)
-        fs.writeFileSync(headerFilePath, csv, 'utf-8')
-      }
-      else {
-        pass.write(JSON.stringify({
-          text: `${csv}\n`,
-          isLastRow,
-        }))
-      }
-    }
-    else {
-      rowdata.push(parsedFile.base, args.sheetName!, args.range!)
-      const csv = Papa.unparse([rowdata])
-      pass.write(JSON.stringify({
-        text: `${csv}\n`,
-        isLastRow,
-      }))
-    }
-  })
-  // rowIndices.forEach((rowIdx) => {
-  //   const rowdata: JsonValue[] = []
-  //   columnIndices.forEach((colIdx) => {
-  //     const currentCell = rawSheet['!data']?.[rowIdx]?.[colIdx]
-  //     rowdata.push((currentCell?.v ?? null) as string)
-  //   })
-  //   if (rowIdx === decodedRange.s.r && rangeIncludesHeader) {
-  //     rowdata.push('source_file', 'source_sheet', 'source_range')
-  //     const csv = Papa.unparse([rowdata])
-  //     if (splitWorksheet)
-  //       fs.writeFileSync(`${outputFilePath}_HEADER.csv`, csv, 'utf-8')
-  //     else pass.write(`${csv}\n`)
-  //   }
-  //   else {
-  //     rowdata.push(parsedFile.base, args.sheetName!, args.range!)
-  //     const csv = Papa.unparse([rowdata])
-  //     pass.write(`${csv}\n`)
-  //   }
-  //   // if (rowIdx === decodedRange.e.r) {
-  //   //   finishParsing(pass, outputFilePath, parsedFile, rangeIncludesHeader, splitWorksheet)
-  //   // }
-  //   //  dataForCSV.push(rowdata) */
-  // })
-  /* fs.writeFile(`${parsedFile.dir}/${parsedFile.name}_${sheetName}_${dayjs().format('YYYY.MM.DD HH.mm.ss')}.csv`, csv, {
-       encoding: 'utf-8',
-     }, (err) => {
-       if (err)
-         throw new Commander.InvalidArgumentError(`There was an error parsing the worksheet ${colors.bold(colors.cyan(`"${sheetName}"`))} from the Excel at ${colors.yellow(`"${filePath}"`)}`)
-       spinner.success(colors.green('Parsed successfully'))
-     }) */
-}
-function finishParsing(pass: PassThrough, outputFilePath: string, parsedFile: ParsedPath, rangeIncludesHeader: boolean, splitWorksheet: boolean, outputFiles: string[]): void {
-  pass.end()
-  const formattedFiles = outputFiles.map(file => `\t${colors.cyan(relative(parsedFile.dir, file))}`)
-  let successMessage = `${colors.green('SUCCESS! The output file(s) have been saved to the following location(s):')}\n${formattedFiles.join('\n')}`
-  if (rangeIncludesHeader) {
-    if (splitWorksheet)
-      successMessage += `\n\n${colors.yellow('NOTE: The header row was included in the output as a separate file. You will have to copy its contents into the Data Loader.')}`
-    else successMessage += `\n\n${colors.yellow('NOTE: The header row was included in the output.')}`
-  }
-  else {
-    successMessage += `\n\n${colors.yellow('NOTE: The header row was not included in the output. You will have to copy it from the source file into the Data Loader.')}`
-  }
-  spinner.start()
-  spinner.success(
-    successMessage,
-  )
-}
-
-async function getWorksheetRange(Sheets: { [sheet: string]: XLSX.WorkSheet }, args: {
-  filePath?: string | undefined
-  sheetName?: string | undefined
-  range?: string | undefined
-}): Promise<string> {
-  const worksheetRange = Sheets[args.sheetName!]['!ref']
-  const parsedRange = XLSX.utils.decode_range(worksheetRange)
-  const isRowInRange = curryRight(inRange, 3)(parsedRange.e.r + 1)(parsedRange.s.r)
-  const isColumnInRange = curryRight(inRange, 3)(parsedRange.e.c + 1)(parsedRange.s.c)
-  const isRangeInDefaultRange = (r: XLSX.Range): boolean => isRowInRange(r.s.r) === true && isColumnInRange(r.s.c) === true && isRowInRange(r.e.r) === true && isColumnInRange(r.e.c) === true
-  const rangeType = await expand({
-    message: 'How do you want to specify the range of the worksheet to parse?',
-    default: 'e',
-    expanded: true,
-    choices: [
-      {
-        name: 'Excel Format (e.g. A1:B10)',
-        value: 'Excel Format',
-        key: 'e',
-      },
-      {
-        name: 'By specifying the start/end row numbers and the start/end column letters',
-        value: 'Numbers and Letters',
-        key: 'n',
-      },
-    ],
-  })
-  if (rangeType === 'Excel Format') {
-    const userRangeInput = input({
-      name: 'range',
-      message: 'Enter the range of the worksheet to parse',
-      default: worksheetRange,
-      validate: (value: string) => {
-        const isValidInput = isRangeInDefaultRange(XLSX.utils.decode_range(value))
-        if (!isValidInput)
-          return `The range must be within the worksheet's default range (${XLSX.utils.encode_range(parsedRange)})`
-        return true
-      },
-    }, {
-      clearPromptOnDone: false,
-      signal: AbortSignal.timeout(5000),
-    }).catch((error: string | { name: string }) => {
-      if (error.name === 'AbortPromptError') {
-        return worksheetRange
-      }
-
-      throw error
-    })
-    return userRangeInput
-  }
-  else {
-    const startRow = await number({
-      name: 'startRow',
-      message: 'Enter the starting row number',
-      default: parsedRange.s.r + 1,
-      min: parsedRange.s.r + 1,
-      max: parsedRange.e.r + 1,
-      step: 1,
-      /* theme: {
-           style: {
-             answer: (text: string) => colors.cyan(`Row "${text}"`),
-             defaultAnswer: (text: string) => colors.cyan(`Row "${text}"`),
-           },
-         }, */
-    })
-    const endRow = await number({
-      name: 'endRow',
-      message: 'Enter the ending row number',
-      default: parsedRange.e.r + 1,
-      min: startRow,
-      max: parsedRange.e.r + 1,
-      step: 1,
-      /* theme: {
-           style: {
-             answer: (text: string) => colors.cyan(`Row "${text}"`),
-             defaultAnswer: (text: string) => colors.cyan(`Row "${text}"`),
-           },
-         }, */
-    })
-    const startCol = await input({
-      name: 'startCol',
-      message: 'Enter the starting column reference (e.g., A)',
-      default: XLSX.utils.encode_col(parsedRange.s.c),
-      // transformer: (value: number) => `Column "${value}"`,
-      validate: (value: string) => {
-        const valueIsValid = /^[A-Z]+$/.test(value)
-        if (!valueIsValid) {
-          return `Invalid column reference. Column references are uppercase letters. The worksheet has data in columns "${XLSX.utils.encode_col(parsedRange.s.c)}" to "${XLSX.utils.encode_col(parsedRange.e.c)}"`
-        }
-        return true
-      },
-    })
-    const endCol = await input({
-      name: 'endCol',
-      message: 'Enter the ending column reference (e.g., AB)',
-      default: XLSX.utils.encode_col(parsedRange.e.c),
-      // transformer: (value: number) => `Column "${value}"`,
-      validate: (value: string) => {
-        const isGreaterThanOrEqualToStartColumn = XLSX.utils.decode_col(value) >= XLSX.utils.decode_col(startCol)
-        const isValidReference = /^[A-Z]+$/.test(value)
-        if (!isValidReference) {
-          return `Invalid column reference. Column references are uppercase letters. The worksheet has data in columns "${XLSX.utils.encode_col(parsedRange.s.c)}" to "${XLSX.utils.encode_col(parsedRange.e.c)}"`
-        }
-        else if (!isGreaterThanOrEqualToStartColumn) {
-          return `The ending column reference must be greater than or equal to the starting column reference ("${startCol}")`
-        }
-        return true
-      },
-    })
-
-    const selectedRange = `${startCol}${startRow}:${endCol}${endRow}`
-    spinner.text = `Will parse ${colors.cyan(`"${selectedRange}"`)} from worksheet ${colors.cyan(`"${args.sheetName}"`)}.\n`
-    return selectedRange
-  }
-}
-
-async function chooseSheetToParse(SheetNames: string[]): Promise<string> {
-  return select({
-    name: 'sheetName',
-    message: 'Select the worksheet to parse',
-    choices: SheetNames.map((value, i) => ({
-      name: `${i + 1}) ${value}`,
-      value,
-      short: value,
-    })),
-  }, {
-    clearPromptOnDone: false,
-  })
-}
-
-async function getExcelFilePath(): Promise<{
-  dirName: string
-  filePath: string
-}> {
-  const cloudFolders = fg.sync(['Library/CloudStorage/**'], {
-    onlyDirectories: true,
-    absolute: true,
-    cwd: os.homedir(),
-    deep: 1,
-  }).map(folder => ({
-    name: basename(folder).replace('OneDrive-SharedLibraries', 'SharePoint-'),
-    value: folder,
-  }))
-  const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], {
-    onlyDirectories: true,
-    absolute: true,
-    cwd: os.homedir(),
-    deep: 1,
-  }).map(folder => ({
-    name: basename(folder),
-    value: folder,
-  }))
-
-  const dirName = await select({
-    name: 'dirName',
-    message: 'Where do you want to start looking for your Excel file?',
-    // pageSize: 20,
-    choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
-  }, {
-    clearPromptOnDone: false,
-  })
-  const filePath = await inquirerFileSelector({
-    message: 'Navigate to the Excel file you want to parse (only files with the .xls or .xlsx extension will be shown, and the file names must start with an alphanumeric character)',
-    basePath: dirName,
-    hideNonMatch: true,
-    allowCancel: true,
-    // pageSize: 20,
-    theme: {
-      style: {
-        answer: (text: string) => colors.cyan(`./${basename(dirName)}/${relative(dirName, text)}`),
-        currentDir: (text: string) => colors.magenta(`./${basename(dirName)}/${relative(dirName, text)}`),
-      },
-    },
-    match(filePath) {
-      if (filePath.isDir) {
-        return !filePath.path.split(sep).some(v => /^[^A-Z0-9]/i.test(v))
-      }
-
-      return !/^[^A-Z0-9]/i.test(filePath.name) && /\.xlsx?$/.test(filePath.name)
-    },
-  }).catch((error: string | { name: string }) => {
-    if (error.name === 'AbortPromptError') {
-      return 'canceled'
-    }
-  })
-  if (filePath === 'canceled') {
-    spinner.error(`Cancelled selection`)
-    process.exit(1)
-  }
-  return {
-    filePath,
-    dirName,
-  }
+    return acc
+  }, command._name!)
 }
