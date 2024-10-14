@@ -1,14 +1,22 @@
 #!/usr/bin/env esno
 import { inspect } from 'node:util'
+import { ReadStream } from 'node:fs'
+import XLSX from 'xlsx'
 import { Command } from '@commander-js/extra-typings'
-import type { Merge } from 'type-fest'
-
+import type {
+  JsonPrimitive,
+  Merge,
+} from 'type-fest'
+import Papa from 'papaparse'
 import {
   has,
+  isEmpty,
   isUndefined,
 } from 'lodash-es'
 import { filename } from 'pathe/utils'
 import ora from 'ora'
+
+import { inRange } from 'radash'
 import pkg from '../package.json'
 import {
   categoryOption,
@@ -28,6 +36,7 @@ import {
   getWorkbook,
   isOverlappingRange,
 } from './excel'
+import writeCsv from './writeCsv'
 // .passThroughOptions()
 
 // .action(async (argFilePath, options) => {})
@@ -60,7 +69,7 @@ program.command('excel')
     const programOptions = {
       ...command.opts(),
       ...command.optsWithGlobals(),
-      filePath,
+      inputFilePath: filePath,
     }
     const wb = await getWorkbook(filePath)
     if (isUndefined(options.sheet) || typeof programOptions.sheet !== 'string' || !has(wb.Sheets, programOptions.sheet!)) {
@@ -77,7 +86,48 @@ program.command('excel')
     if (isUndefined(programOptions.rangeIncludesHeader)) {
       programOptions.rangeIncludesHeader = await setRangeIncludesHeader(programOptions.range) as true
     }
-    console.log(inspect({ excelOptions: programOptions }, { colors: true }))
+    if (programOptions.rangeIncludesHeader === false)
+      programOptions.header = false
+    const decodedRange = XLSX.utils.decode_range(programOptions.range)
+    const json = XLSX.utils.sheet_to_json(ws, {
+      range: programOptions.range,
+      raw: true,
+      header: 1,
+    })
+    // const data = select(json as JsonPrimitive[][], (value, r) => {
+    //   if (value.length === 0) {
+    //     // if (inRange(r, decodedRange.s.r, decodedRange.e.r + 1))
+    //     // return times(decodedRange.e.c - decodedRange.s.c + 1, () => undefined)
+    //     // return times(decodedRange.e.c - decodedRange.s.c + 1, () => undefined)
+    //     // else return undefined
+    //     return undefined
+    //   }
+    //   else {
+    //     return value.map((v, c) => {
+    //       if (inRange(r, decodedRange.s.r, decodedRange.e.r + 1)) {
+    //         if (inRange(c, decodedRange.s.c, decodedRange.e.c + 1)) {
+    //           return v
+    //         }
+    //         else {
+    //           return undefined
+    //         }
+    //       }
+    //       else {
+    //         return undefined
+    //       }
+    //     }).filter(value => !isUndefined(value))
+    //   }
+    // }, value => !isUndefined(value)
+    const data = (json as JsonPrimitive[][]).filter((v, i) => !isEmpty(v) && !isUndefined(v) && inRange(i, decodedRange.s.r, decodedRange.e.r + 1))
+    // if (!programOptions.rangeIncludesHeader) {
+    //   data.unshift(times(data[0].length, () => null))
+    // }
+    const csv = Papa.unparse(data, { header: programOptions.rangeIncludesHeader })
+    writeCsv(ReadStream.from(csv), programOptions)
+    // console.log(inspect({
+    //   excelOptions: programOptions,
+    //   csv,
+    // }, { colors: true }))
   })
 
 program.command('csv')
