@@ -47,5 +47,6 @@
     "**/Thumbs.db": true
   },
   "explorerExclude.backup": {},
-  "eslint.codeActionsOnSave.mode": "all"
+  "eslint.codeActionsOnSave.mode": "all",
+  "editor.wordWrap": "on"
 }
