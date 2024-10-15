@@ -36,6 +36,8 @@ import { objectEntries } from '@antfu/utils'
 import {
   isPrimitive,
   objectify,
+  omit,
+  toInt,
 } from 'radash'
 import {
   anyOf,
@@ -67,7 +69,7 @@ import {
 } from './excel'
 import writeCsv from './writeCsv'
 
-const program = new Command('parse').version(pkg.version)
+const program = new Command(pkg.name).version(pkg.version)
 
   .description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
 
@@ -89,6 +91,8 @@ type ProgramOptions = SetFieldType<ReturnType<typeof program.opts>, 'fileSize', 
 export type GlobalOptions = Simplify<{ [Prop in keyof ProgramOptions]: boolean extends ProgramOptions[Prop] ? ProgramOptions[Prop] : Exclude<ProgramOptions[Prop], true> } & {
   inputFilePath: string
   parsedOutputFile: Omit<ParsedPath, 'base'>
+  rowCount?: number | null
+  skipLines?: number | null
 }>
 
 program.command('excel')
@@ -116,6 +120,7 @@ program.command('excel')
       sheet = await setSheetName(wb)
     }
     const ws = wb.Sheets[sheet!]
+    parsedOutputFile.name = `${parsedOutputFile.name} ${sheet}`
     if (typeof ws === 'undefined') {
       ora(`The worksheet "${sheet}" does not exist in the Excel file ${filename(filePath)}`).fail()
       process.exit(1)
@@ -159,9 +164,9 @@ program.command('excel')
       sheet,
       header,
     }
-    const commandLineString = generateCommandLineString(combinedOptions, command)
+    const commandLineString = generateCommandLineString(omit(combinedOptions, ['parsedOutputFile']), command)
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
-      combinedOptions,
+      combinedOptions: omit(combinedOptions, ['parsedOutputFile']),
       commandLineString,
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
@@ -177,12 +182,26 @@ program.command('excel')
 program.command('csv')
   .description('Parse a CSV file')
   .addOption(makeFilePathOption('CSV'))
+  .addOption(new Option('--row-count [number]', 'the number of rows to parse in the CSV file')
+    .preset(-1)
+    .argParser((val) => {
+      const n = toInt(val, null)
+      return n
+    }))
+  .addOption(new Option('--skip-lines [number]', 'the number of rows to skip before reading the CSV file')
+    .preset(-1)
+    .argParser((val) => {
+      const n = toInt(val, null)
+      return n
+    }))
   .action(async (options, command) => {
     const globalOptions = command.optsWithGlobals<Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
     let {
       header,
       rowFilters,
       filePath,
+      rowCount = -1,
+      skipLines = -1,
     } = globalOptions
     filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
     const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
@@ -192,16 +211,18 @@ program.command('csv')
       filePath,
     }
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
-      combinedOptions,
-      commandLineString: generateCommandLineString(combinedOptions, command),
+      combinedOptions: omit(combinedOptions, ['parsedOutputFile']),
+      commandLineString: generateCommandLineString(omit(combinedOptions, ['parsedOutputFile']), command),
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
-    writeCsv(createReadStream(filePath), {
+    writeCsv(createReadStream(filePath, 'utf-8'), {
       ...globalOptions,
       header,
       inputFilePath: filePath,
       parsedOutputFile,
+      rowCount,
+      skipLines,
     })
   })
 
@@ -239,7 +260,7 @@ function generateCommandLineString(combinedOptions: Record<string | number, Json
       }
     }
     return acc
-  }, command._name!)
+  }, `${pkg.name} ${command._name!}`)
 }
 function stringifyValue(val: any): any {
   const nonAlphaNumericPattern = createRegExp(anyOf(whitespace, linefeed, carriageReturn))

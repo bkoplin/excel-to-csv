@@ -39,7 +39,10 @@ export async function checkAndResolveFilePath(fileType: 'Excel' | 'CSV', argFile
 
 export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise<string> {
   const fileExtString = fileType === 'Excel' ? `${colors.cyanBright('.xls')} or ${colors.cyanBright('.xlsx')}` : colors.cyanBright('csv')
-  const pathRegexp = fileType === 'Excel' ? createRegExp(exactly('.'), exactly('xlsx').before(maybe('x')).at.lineEnd(), ['i']) : createRegExp(exactly('.'), exactly('csv').at.lineEnd(), ['i'])
+  const pathRegexp = fileType === 'Excel'
+    ? createRegExp(exactly('.'), exactly('xlsx').before(maybe('x')).at.lineEnd(), ['i'])
+    : createRegExp(exactly('.'), exactly('csv').or('txt')
+      .or('tsv').at.lineEnd(), ['i'])
   return inquirerFileSelector({
     message: `Navigate to the ${colors.yellowBright(fileType)} file you want to parse (only files with an ${fileExtString} extension will be shown, and the file names must start with an alphanumeric character)`,
     basePath,

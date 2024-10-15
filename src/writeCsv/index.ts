@@ -15,6 +15,7 @@ import {
 import { filename } from 'pathe/utils'
 import Table from 'table-layout'
 import numbro from 'numbro'
+import filenamify from 'filenamify'
 import {
   alphabetical,
   isPrimitive,
@@ -24,7 +25,6 @@ import {
   zipToObject,
 } from 'radash'
 import {
-  camelCase,
   findIndex,
   findLast,
   isEmpty,
@@ -36,7 +36,6 @@ import {
   maxBy,
   padStart,
   sumBy,
-  upperFirst,
 } from 'lodash-es'
 import Papa from 'papaparse'
 import type { JsonPrimitive } from 'type-fest'
@@ -56,6 +55,8 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
     matchType,
     rowFilters: filters = {},
     parsedOutputFile,
+    rowCount,
+    skipLines,
   } = options
 
   const writeHeaderOnEachFile = options.header
@@ -70,83 +71,105 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
   let fields: string[] = []
   const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
   const headerFile = createWriteStream(headerFilePath, 'utf-8')
+  let skippedLines = 0
   let parsedLines = 0
   Papa.parse<JsonPrimitive[]>(inputFile, {
     async step(results, parser) {
       parser.pause()
-      if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
-        fields = results.data as string[]
-        headerFile.end(Papa.unparse([formatHeaderValues(results)]))
+      if (rowCount === parsedLines) {
+        parser.abort()
+      }
+      if ((skipLines ?? -1) > 0 && skippedLines < (skipLines ?? -1)) {
+        skippedLines++
       }
       else {
-        const thisRow = zipToObject(fields, results.data)
-        parsedLines++
-        const filtersArray = objectEntries(filters) as Array<[string, JsonPrimitive[]]>
-        if (isEmpty(filters) || filtersArray.every(([field, value]) => (value.includes(thisRow[field]) && matchType === 'all') || (!value.includes(thisRow[field]) && matchType === 'none')) || filtersArray.some(([field, value]) => value.includes(thisRow[field]) && matchType === 'any')) {
-          const csvOutput = Papa.unparse([results.data])
-          const csvRowLength = Buffer.from(csvOutput).length
-          let category: string | undefined
-          const rawCategory = categoryField in thisRow ? thisRow[categoryField as string] : undefined
-          if (isPrimitive(rawCategory) && !isEmpty(categoryField))
-            category = isEmpty(rawCategory) ? 'EMPTY' : JSON.stringify(rawCategory)
-          else if (isNull(rawCategory) && !isEmpty(categoryField))
-            category = 'NULL'
-          else
-            category = undefined
-
-          let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
-
-          if (isUndefined(activeFileObject)) {
-            const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
-            const defaultCsvFileName = generateCsvFileName({
-              fileNumber: defaultFileNumber,
-              category,
-            })
-            activeFileObject = {
-              BYTES: csvRowLength,
-              FILENUM: (maxFileSizeInMb ? 1 : undefined),
-              ROWS: 1,
-              CATEGORY: category,
-              FILTER: filters,
-              PATH: format({
-                ...parsedOutputFile,
-                name: generateCsvFileName({
-                  fileNumber: defaultFileNumber,
-                  category,
-                }),
-              }),
+        if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
+          fields = results.data as string[]
+          headerFile.end(Papa.unparse([formatHeaderValues(results)]))
+        }
+        else {
+          const thisRow = zipToObject(fields, results.data)
+          parsedLines++
+          const filtersArray = objectEntries(filters) as Array<[string, JsonPrimitive[]]>
+          let filterTest = isEmpty(filters)
+          if (!filterTest) {
+            if (matchType === 'none') {
+              filterTest = filtersArray.every(([field, value]) => !value.includes(thisRow[field]))
             }
-            spinner.text = chalk.yellow(`CREATED "${defaultCsvFileName}"`)
-            await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
-            files.push(activeFileObject)
-          }
-          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-            spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
-            // await delay(noop, 1500)
-            const newActiveFileObject = {
-              BYTES: csvRowLength,
-              FILENUM: activeFileObject.FILENUM! + 1,
-              ROWS: 1,
-              FILTER: filters,
-              PATH: format({
-                ...parsedOutputFile,
-                name: generateCsvFileName({
-                  fileNumber: activeFileObject.FILENUM! + 1,
-                  category,
-                }),
-              }),
-              CATEGORY: category!,
+            else if (matchType === 'any') {
+              filterTest = filtersArray.some(([field, value]) => value.includes(thisRow[field]))
             }
-            await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
-            files.push(newActiveFileObject)
+            else {
+              filterTest = filtersArray.every(([field, value]) => value.includes(thisRow[field]))
+            }
           }
-          else {
-            activeFileObject.BYTES += csvRowLength
-            activeFileObject.ROWS += 1
-            const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
-            files[currentFileIndex] = activeFileObject
-            spinner.text = chalk.yellow(`WRITING "${parse(activeFileObject.PATH).base}"`)
-            await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+
+          if (filterTest) {
+            const csvOutput = Papa.unparse([results.data])
+            const csvRowLength = Buffer.from(csvOutput).length
+            let category: string | undefined
+            const rawCategory: string | number | boolean | null | undefined = categoryField in thisRow ? thisRow[categoryField as string] : undefined
+            if (isPrimitive(rawCategory) && !isEmpty(categoryField))
+              category = isEmpty(rawCategory) ? 'EMPTY' : rawCategory
+            else if (isNull(rawCategory) && !isEmpty(categoryField))
+              category = 'NULL'
+            else
+              category = undefined
+
+            let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
+
+            if (isUndefined(activeFileObject)) {
+              const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
+              const defaultCsvFileName = generateCsvFileName({
+                fileNumber: defaultFileNumber,
+                category,
+              })
+              activeFileObject = {
+                BYTES: csvRowLength,
+                FILENUM: (maxFileSizeInMb ? 1 : undefined),
+                ROWS: 1,
+                CATEGORY: category,
+                FILTER: filters,
+                PATH: format({
+                  ...parsedOutputFile,
+                  name: generateCsvFileName({
+                    fileNumber: defaultFileNumber,
+                    category,
+                  }),
+                }),
+              }
+              spinner.text = chalk.yellow(`CREATED "${defaultCsvFileName}"`)
+              await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+              files.push(activeFileObject)
+            }
+            else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
+              spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
+              // await delay(noop, 1500)
+              const newActiveFileObject = {
+                BYTES: csvRowLength,
+                FILENUM: activeFileObject.FILENUM! + 1,
+                ROWS: 1,
+                FILTER: filters,
+                PATH: format({
+                  ...parsedOutputFile,
+                  name: generateCsvFileName({
+                    fileNumber: activeFileObject.FILENUM! + 1,
+                    category,
+                  }),
+                }),
+                CATEGORY: category!,
+              }
+              await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+              files.push(newActiveFileObject)
+            }
+            else {
+              activeFileObject.BYTES += csvRowLength
+              activeFileObject.ROWS += 1
+              const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
+              files[currentFileIndex] = activeFileObject
+              spinner.text = chalk.yellow(`WRITING "${parse(activeFileObject.PATH).base}"`)
+              await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+            }
           }
         }
       }
@@ -156,7 +179,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
       const maxFileNumLength = `${maxBy(files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length
       const parseResults = alphabetical(files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
       const parseOutputs = files.map((o) => {
-        return mapValues(shake(o, v => isNil(v) || isEmpty(v)), v => isObjectLike(v) ? yaml.stringify(v) : v)
+        return mapValues(shake(o, v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
       })
       const parseResultsCsv = Papa.unparse(parseOutputs)
       const totalRows = sumBy(files, 'ROWS')
@@ -238,7 +261,10 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
       if (writeHeaderOnEachFile)
         spinnerText += chalk.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
       else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(headerFilePath).base}"`)}\n`)
-      spinner.succeed(`${spinnerText}\n${table.toString()}`)
+      spinner.stopAndPersist({
+        symbol: '🚀',
+        text: `${spinnerText}\n${table.toString()}`,
+      })
       process.exit()
     },
     error(error, file) {
@@ -247,6 +273,7 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
 
     header: false,
     transform: value => value.trim() === '' ? null : value.trim(),
+    // dynamicTyping: true,
   })
   function generateCsvFileName({
     fileNumber,
@@ -256,13 +283,16 @@ export default async function<Options extends GlobalOptions>(inputFile: Readable
     category?: string | null
   } = {}): string {
     let csvFileName = parsedOutputFile.name
+    const nonAlphaNumericPattern = /[^A-Z0-9]/gi
 
     if (typeof category !== 'undefined' && category !== null)
-      csvFileName += ` ${upperFirst(camelCase(category))}`
+      csvFileName += ` ${category}`
+      // csvFileName += ` ${category.replace(nonAlphaNumericPattern, '_')}`
+      // csvFileName += ` ${upperFirst(camelCase(category))}`
     if (typeof fileNumber !== 'undefined')
       csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`
 
-    return csvFileName
+    return filenamify(csvFileName, { replacement: '_' })
   }
 }
 function formatHeaderValues(results: { data: JsonPrimitive[] }): string[] {
