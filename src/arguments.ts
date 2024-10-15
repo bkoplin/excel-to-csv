@@ -44,8 +44,8 @@ export const filePathArgument = new Argument('[path]', 'the full path to the CSV
   .argParser(async (value: string | undefined) => await checkAndResolveFilePath('CSV', value))
 
 export function makeFilePathOption(parserType: 'Excel' | 'CSV'): Option<'--file-path [path]', 'Excel' | 'CSV', string, undefined, false, undefined> {
-  return new Option('--file-path [path]', `the full path to the ${chalk.yellowBright(parserType)} file`).default('CSV')
-    .preset('' as 'Excel' | 'CSV')
+  return new Option('--file-path [path]', `the full path to the ${chalk.yellowBright(parserType)} file`).default('')
+    .preset('')
 }
 export const filterValuesOption = new Option(
   '--row-filters [operators...]',

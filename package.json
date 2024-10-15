@@ -1,5 +1,5 @@
 {
-  "name": "excel-to-csv",
+  "name": "parse",
   "type": "module",
   "version": "4.2.1",
   "packageManager": "pnpm@9.9.0",
