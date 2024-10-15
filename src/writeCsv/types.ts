@@ -1,3 +1,4 @@
+import type { JsonPrimitive } from 'type-fest'
 
 export interface FileMetrics {
   BYTES: number
@@ -5,6 +6,7 @@ export interface FileMetrics {
   ROWS: number
   PATH: string
   CATEGORY?: string
+  FILTER?: Record<string, JsonPrimitive[]> | undefined
 }
 export interface SplitOptions {
   inputFilePath: string

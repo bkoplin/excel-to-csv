@@ -10,15 +10,16 @@ import {
 } from '@commander-js/extra-typings'
 import type {
   JsonPrimitive,
-  JsonValue,
   Merge,
   SetFieldType,
   Simplify,
 } from 'type-fest'
 import Papa from 'papaparse'
 import {
+  isArray,
   isEmpty,
   isNull,
+  isObject,
   isUndefined,
   range as lRange,
 } from 'lodash-es'
@@ -33,10 +34,16 @@ import fs from 'fs-extra'
 import yaml from 'yaml'
 import { objectEntries } from '@antfu/utils'
 import {
-  isObject,
   isPrimitive,
   objectify,
 } from 'radash'
+import {
+  anyOf,
+  carriageReturn,
+  createRegExp,
+  linefeed,
+  whitespace,
+} from 'magic-regexp'
 import pkg from '../package.json'
 import {
   categoryOption,
@@ -77,7 +84,9 @@ const program = new Command('parse').version(pkg.version)
   .addOption(maxFileSizeOption)
   .addOption(writeHeaderOption)
 
-export type GlobalOptions = Simplify<SetFieldType<ReturnType<typeof program.opts>, 'fileSize', number | undefined> & {
+type ProgramOptions = SetFieldType<ReturnType<typeof program.opts>, 'fileSize', number | undefined>
+
+export type GlobalOptions = Simplify<{ [Prop in keyof ProgramOptions]: boolean extends ProgramOptions[Prop] ? ProgramOptions[Prop] : Exclude<ProgramOptions[Prop], true> } & {
   inputFilePath: string
   parsedOutputFile: Omit<ParsedPath, 'base'>
 }>
@@ -113,6 +122,7 @@ program.command('excel')
     }
     if (!isOverlappingRange(ws, range)) {
       range = await setRange(wb, sheet)
+      isOverlappingRange(ws, range)
     }
     if (isUndefined(rangeIncludesHeader)) {
       rangeIncludesHeader = await setRangeIncludesHeader(range) as true
@@ -201,23 +211,41 @@ for (const cmd of program.commands) {
 program.parse(process.argv)
 export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFilePath: string }>
 
-function generateCommandLineString(combinedOptions: Record<string | number, JsonValue | undefined>, command: Command & { _name?: string }): string {
+function generateCommandLineString(combinedOptions: Record<string | number, JsonPrimitive | Record<string, Array<JsonPrimitive> | undefined> | undefined>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
     const optionFlags = objectify([...command.options, ...command.parent?.options ?? []], o => o.attributeName(), o => o.long)
     if (key in optionFlags) {
-      if (!Array.isArray(value)) {
-        if (isPrimitive(value)) {
-          acc += ` \\\n${optionFlags[key]} ${JSON.stringify(value)}`
+      if (!Array.isArray(value) && typeof value !== 'undefined') {
+        if (isObject(value) && !isEmpty(value)) {
+          const stringifiedEntries = objectEntries(value).map(([k, v]) => {
+            const valueEntries = []
+            if (isArray(v)) {
+              for (const val of v) valueEntries.push(`${stringifyValue(k)}:${stringifyValue(val)}`)
+            }
+            else {
+              valueEntries.push(`${stringifyValue(k)}:${stringifyValue(v)}`)
+            }
+            return valueEntries
+          })
+            .join(' ')
+          acc += ` \\\n${optionFlags[key]} ${stringifiedEntries}`
         }
-        else if (isObject(value) && !isEmpty(value)) {
-          acc += ` \\\n${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
-            .join(' ')}`
+        else if (isPrimitive(value)) {
+          acc += ` \\\n${optionFlags[key]} ${stringifyValue(value)}`
         }
       }
       else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
-        acc += ` \\\n${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
+        acc += ` \\\n${optionFlags[key]} ${value.map(v => stringifyValue(v)).join(' ')}`
       }
     }
     return acc
   }, command._name!)
+}
+function stringifyValue(val: any): any {
+  const nonAlphaNumericPattern = createRegExp(anyOf(whitespace, linefeed, carriageReturn))
+  if (typeof val !== 'string')
+    return val
+  else if (nonAlphaNumericPattern.test(val))
+    return `'${val}'`
+  return val
 }

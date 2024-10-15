@@ -57,7 +57,7 @@ export const filterValuesOption = new Option(
   .implies({ matchType: `all` })
   .default<EmptyObject | undefined>(undefined)
   .preset<EmptyObject | undefined>(undefined)
-  .argParser((val, filters: Record<string, Array<JsonPrimitive>> = {}) => {
+  .argParser<Record<string, Array<JsonPrimitive>>>((val, filters = {}) => {
     if (typeof val !== 'undefined' && !isEmpty(val)) {
       const [key, value] = (val || '').split(':').map(v => v.trim())
       if (key.length) {
@@ -78,8 +78,8 @@ export const filterValuesOption = new Option(
           filters[key] = [...filters[key], true]
         }
       }
-      return filters
     }
+    return filters
   })
 export const categoryOption = new Option(
   '-c, --category-field [column title]',
@@ -102,4 +102,4 @@ export const writeHeaderOption = new Option(
   'enable/disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
 ).default<undefined | boolean>(undefined)
   .argParser(val => val === 'true')
-  .preset(true)
+  .preset('true')

@@ -24,11 +24,11 @@ export async function getWorkbook(inputPath: string): Promise<XLSX.WorkBook> {
 export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined): range is string {
   const sheetRange = ws?.['!ref']
   if (typeof range === 'undefined' || typeof sheetRange === 'boolean') {
-    ora(`Your input range is not a valid range; you will need to select a range`).warn()
+    ora(chalk.magentaBright(`Your input range is not a valid range; you will need to select a range`)).warn()
     return false
   }
   else if (typeof sheetRange === 'undefined') {
-    ora(`The worksheet does not exist in the Excel file or does not have a range`).fail()
+    ora(chalk.magentaBright(`The worksheet does not exist in the Excel file or does not have a range`)).fail()
     process.exit(1)
     return false
   }
@@ -61,12 +61,12 @@ export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined
           const encodedInputVal = XLSX.utils[objType[2]](inputVal)
           const diffType = inputVal < sheetVal ? 'before' : 'after'
           if (inputVal !== sheetVal) {
-            warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.yellowBright(encodedInputVal)}, which is ${chalk.yellowBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
+            warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.magentaBright(encodedInputVal)}, which is ${chalk.magentaBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
           }
         }
       }
       if (warningStrings.length)
-        ora(chalk.bold(`You have input a range (${chalk.yellowBright(`${range}`)}) that includes less data than the worksheet data range (${`${chalk.yellowBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
+        ora(chalk.bold.yellowBright(`You have input a range (${chalk.magentaBright(range)}) that includes less data than the worksheet data range (${`${chalk.magentaBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
       //   if (!colsStartInSheetRange) {
       //   }
       return true
