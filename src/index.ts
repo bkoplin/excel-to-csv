@@ -1,4 +1,6 @@
 #!/usr/bin/env esno
+
+import { homedir } from 'node:os'
 import {
   ReadStream,
   createReadStream,
@@ -29,6 +31,7 @@ import ora from 'ora'
 import {
   join,
   parse,
+  relative,
 } from 'pathe'
 import fs from 'fs-extra'
 import yaml from 'yaml'
@@ -235,28 +238,27 @@ export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFileP
 function generateCommandLineString(combinedOptions: Record<string | number, JsonPrimitive | Record<string, Array<JsonPrimitive> | undefined> | undefined>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
     const optionFlags = objectify([...command.options, ...command.parent?.options ?? []], o => o.attributeName(), o => o.long)
-    if (key in optionFlags) {
+    if (key in optionFlags && command.getOptionValueSourceWithGlobals(key as string) !== 'implied') {
       if (!Array.isArray(value) && typeof value !== 'undefined') {
         if (isObject(value) && !isEmpty(value)) {
-          const stringifiedEntries = objectEntries(value).map(([k, v]) => {
+          objectEntries(value).forEach(([k, v]) => {
             const valueEntries = []
             if (isArray(v)) {
-              for (const val of v) valueEntries.push(`${stringifyValue(k)}:${stringifyValue(val)}`)
+              for (const val of v) acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${val}`)} `
             }
             else {
-              valueEntries.push(`${stringifyValue(k)}:${stringifyValue(v)}`)
+              acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${v}`)} `
             }
-            return valueEntries
           })
-            .join(' ')
-          acc += ` \\\n${optionFlags[key]} ${stringifiedEntries}`
         }
         else if (isPrimitive(value)) {
-          acc += ` \\\n${optionFlags[key]} ${stringifyValue(value)}`
+          // if (key === 'filePath') acc += ` \\\n${optionFlags[key]} ${stringifyValue(join('~/', relative(homedir(), value as string)))} `
+          // else 
+          acc += ` \\\n${optionFlags[key]} ${stringifyValue(value)} `
         }
       }
       else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
-        acc += ` \\\n${optionFlags[key]} ${value.map(v => stringifyValue(v)).join(' ')}`
+        acc += ` \\\n${optionFlags[key]} ${value.map(v => stringifyValue(v)).join(' ')} `
       }
     }
     return acc
