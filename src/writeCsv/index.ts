@@ -182,7 +182,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
               const totalRows = sumBy(files, 'ROWS')
 
-              spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)};"`)
+              spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
               delay(() => parser.resume(), 500)
             })
             stream.write(`${csvOutput}\n`)
