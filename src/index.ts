@@ -1,12 +1,14 @@
+import type { ParsedPath } from 'node:path'
 import type {
-  JsonPrimitive,
-  Merge,
+  Primitive,
   Simplify,
 } from 'type-fest'
 import {
   createReadStream,
   ReadStream,
 } from 'node:fs'
+import { createInterface } from 'node:readline'
+import { PassThrough } from 'node:stream'
 import { Command } from '@commander-js/extra-typings'
 import fs from 'fs-extra'
 import { isUndefined } from 'lodash-es'
@@ -69,13 +71,17 @@ const _excelCommands = program.command('excel')
   .addOption(sheetRangeOption)
   .addOption(includesHeaderOption)
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals < Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
+    const globalOptions = command.optsWithGlobals < ExcelOptionsWithGlobals>()
 
+    globalOptions.command = 'Excel'
     globalOptions.filePath = await checkAndResolveFilePath('Excel', globalOptions.filePath)
 
     const parsedOutputFile = generateParsedCsvFilePath(parse(globalOptions.filePath), globalOptions.rowFilters)
 
-    const wb = await getWorkbook(globalOptions.filePath)
+    const {
+      wb,
+      bytesRead,
+    } = await getWorkbook(globalOptions.filePath)
 
     if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
       globalOptions.sheet = await setSheetName(wb)
@@ -101,7 +107,7 @@ const _excelCommands = program.command('excel')
 
     const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
 
-    const data: (JsonPrimitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
+    const data: (Primitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
 
     const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
 
@@ -116,6 +122,7 @@ const _excelCommands = program.command('excel')
     writeCsv(ReadStream.from(csv), {
       ...globalOptions,
       parsedOutputFile,
+      bytesRead,
     })
   })
 
@@ -125,8 +132,9 @@ const _csvCommands = program.command('csv')
   .addOption(skipLinesOption)
   .addOption(rowCountOption)
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals<GlobalOptions>()
+    const globalOptions = command.optsWithGlobals<CSVOptionsWithGlobals>()
 
+    globalOptions.command = 'CSV'
     globalOptions.filePath = await checkAndResolveFilePath('CSV', globalOptions.filePath)
 
     const parsedOutputFile = generateParsedCsvFilePath(parse(globalOptions.filePath), globalOptions.rowFilters)
@@ -137,9 +145,52 @@ const _csvCommands = program.command('csv')
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
-    writeCsv(createReadStream(globalOptions.filePath, 'utf-8'), {
-      ...globalOptions,
-      parsedOutputFile,
+
+    const sourceStream = createReadStream(globalOptions.filePath, 'utf-8')
+
+    const inputStreamReader = new PassThrough({ encoding: 'utf-8' })
+
+    const lineReader = createInterface({ input: sourceStream })
+
+    let skippedLines = 0
+
+    let bytesRead = 0
+
+    // let rowCount = 0
+
+    lineReader.on('close', () => {
+    // inputStreamReader.on('end', () => {
+      // lineReader.close()
+      writeCsv(inputStreamReader, {
+        ...globalOptions,
+        parsedOutputFile,
+        skippedLines: skippedLines - 1,
+        // rowCount,
+        bytesRead,
+      })
+    })
+    // })
+
+    // const lines = []
+
+    lineReader.on('line', (line) => {
+      if ('skipLines' in globalOptions && (globalOptions.skipLines || -1) > 0 && skippedLines < (globalOptions.skipLines || -1)) {
+        skippedLines++
+      }
+      else {
+        const formattedLine = `${line}\n`
+
+        // if ('rowCount' in globalOptions && globalOptions.rowCount !== -1 && globalOptions.rowCount < rowCount) {
+        //   bytesRead += Buffer.from(formattedLine).length
+        //   rowCount++
+        //   lineReader.close()
+        // }
+        // else {
+        bytesRead += Buffer.from(formattedLine).length
+        // rowCount++
+        // lineReader.pause()
+        inputStreamReader.write(formattedLine)
+      }
     })
   })
 
@@ -149,10 +200,28 @@ type ExcelCommand = typeof _excelCommands
 
 type ProgramCommand = typeof program
 
-export type ProgramOptions = Simplify<ReturnType<CsvCommand['opts']> & ReturnType<ExcelCommand['opts']> & ReturnType<ProgramCommand['opts']>>
+export type CSVOptions = ReturnType<CsvCommand['opts']>
 
-export type GlobalOptions = { [Prop in keyof ProgramOptions]: boolean extends ProgramOptions[Prop] ? ProgramOptions[Prop] : Exclude<ProgramOptions[Prop], true> }
+export type ExcelOptions = ReturnType<ExcelCommand['opts']>
 
-export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFilePath: string }>
+export type CSVOptionsWithGlobals = Simplify<CSVOptions & ProgramCommandOptions & {
+  skippedLines: number
+  rowCount: number
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  bytesRead: number
+  command: `CSV`
+}>
+
+export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOptions & {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  bytesRead: number
+  command: `Excel`
+}>
+
+export type ProgramCommandOptions = ReturnType<ProgramCommand['opts']>
+
+export type GlobalProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
+
+export type GlobalOptions = { [Prop in keyof GlobalProgramOptions]: boolean extends GlobalProgramOptions[Prop] ? GlobalProgramOptions[Prop] : Exclude<GlobalProgramOptions[Prop], true> }
 
 program.parse(process.argv)

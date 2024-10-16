@@ -1,6 +1,7 @@
 
 import type {
   EmptyObject,
+  Integer,
   JsonPrimitive,
 } from 'type-fest'
 import { Option } from '@commander-js/extra-typings'
@@ -24,19 +25,22 @@ export const sheetNameOption = new Option('-n, --sheet [sheet name]', 'the sheet
 export const sheetRangeOption = new Option('-r, --range [range]', 'the range of cells to parse in the Excel file').preset('')
 .default(undefined)
 
-export const includesHeaderOption = new Option('-i, --range-includes-header', 'flag to indicate whether the range include the header row').preset<boolean>(true)
-.default(undefined)
+export const includesHeaderOption = new Option('-i, --range-includes-header [true|false]', 'flag to indicate whether the range include the header row')
+  .argParser(val => val !== 'false' && val !== 'f')
+  .preset('true')
 
 export const skipLinesOption = new Option('-l, --skip-lines [number]', 'the number of rows to skip before reading the CSV file')
-  .preset(-1)
-  .argParser((val) => {
+  .preset(-1 as const)
+  .default(-1 as const)
+  .argParser((val: `${number}` | string) => {
     const n = toInt(val, null)
 
-    return n
+    return n as null | Integer<`${typeof val}`>
   })
 
 export const rowCountOption = new Option('-r, --row-count [number]', 'the number of rows to parse in the CSV file')
-  .preset(-1)
+  .preset(-1 as const)
+  .default(-1 as const)
   .argParser((val) => {
     const n = toInt(val, null)
 
@@ -48,8 +52,8 @@ export const filterValuesOption = new Option(
   `a header/value pair to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}. \nTo apply multiple filters, input the option multiple times, e.g., \n${`${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 1]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 2]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 2]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 3]')}`}`,
 )
   .implies({ matchType: `all` })
-  .default<EmptyObject | undefined>(undefined)
-  .preset<EmptyObject | undefined>(undefined)
+  .preset(undefined as unknown as EmptyObject)
+  .default(undefined as unknown as EmptyObject)
   .argParser<Record<string, Array<JsonPrimitive>>>((val, filters = {}) => {
     if (typeof val !== 'undefined' && !isEmpty(val)) {
       const [key, value] = (val || '').split(':').map(v => v.trim())
@@ -97,11 +101,10 @@ export const filterTypeOption = new Option('-t, --match-type [choice]', 'the typ
   .preset<`all` | `any` | `none`>(`all`)
 
 export const writeHeaderOption = new Option(
-  '-h, --header [boolean]',
+  '-h, --header [true|false]',
   'enable/disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
 )
-  .default<undefined | boolean>(undefined)
-  .argParser(val => val === 'true')
+  .argParser(val => val !== 'false' && val !== 'f')
   .preset('true')
 
 export function parseRowFilters(filters: string[]): Record<string, JsonPrimitive[]> {

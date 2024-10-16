@@ -1,4 +1,4 @@
-import type { JsonPrimitive } from 'type-fest'
+import type { Primitive } from 'type-fest'
 import { readFile } from 'node:fs/promises'
 import {
   confirm,
@@ -13,15 +13,22 @@ import ora from 'ora'
 import { inRange } from 'radash'
 import XLSX from 'xlsx'
 
-export async function getWorkbook(inputPath: string): Promise<XLSX.WorkBook> {
+export async function getWorkbook(inputPath: string): Promise<{
+  wb: XLSX.WorkBook
+  bytesRead: number
+
+}> {
   const buffer = await readFile(inputPath)
 
-  return XLSX.read(buffer, {
-    type: 'buffer',
-    cellDates: true,
-    raw: true,
-    dense: true,
-  })
+  return {
+    wb: XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+      raw: true,
+      dense: true,
+    }),
+    bytesRead: buffer.length,
+  }
 }
 export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined): range is string {
   const sheetRange = ws?.['!ref']
@@ -214,15 +221,15 @@ export async function setRangeIncludesHeader(_inputRange: string, defaultAnswer?
     default: defaultAnswer,
   })
 }
-export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): (JsonPrimitive | Date)[][] {
-  const data: (JsonPrimitive | Date)[][] = []
+export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): (Primitive | Date)[][] {
+  const data: (Primitive | Date)[][] = []
 
   const rowIndices = range(parsedRange.s.r, parsedRange.e.r + 1)
 
   const colIndices = range(parsedRange.s.c, parsedRange.e.c + 1)
 
   for (const rowIndex of rowIndices) {
-    const row: (JsonPrimitive | Date)[] = []
+    const row: (Primitive | Date)[] = []
 
     for (const colIndex of colIndices) {
       const cell = ws?.['!data']?.[rowIndex]?.[colIndex]

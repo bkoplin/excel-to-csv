@@ -1,6 +1,10 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { ParsedPath } from 'node:path'
-import type { GlobalOptions } from './index'
+import type {
+  CSVOptionsWithGlobals,
+  ExcelOptionsWithGlobals,
+  GlobalOptions,
+} from './index'
 import { homedir } from 'node:os'
 import { objectEntries } from '@antfu/utils'
 import { Separator } from '@inquirer/core'
@@ -114,11 +118,11 @@ export function generateParsedCsvFilePath(parsedInputFile: ParsedPath, filters: 
 
   return parsedOutputFile
 }
-export function generateCommandLineString(combinedOptions: GlobalOptions, command: Command & { _name?: string }): string {
+export function generateCommandLineString(combinedOptions: ExcelOptionsWithGlobals | CSVOptionsWithGlobals, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
     const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as keyof GlobalOptions, o => o.long)
 
-    if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) !== 'implied' && typeof value !== 'undefined') {
+    if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) === 'cli' && typeof value !== 'undefined') {
       if (isObject(value)) {
         if (!isEmpty(value)) {
           for (const [k, v] of objectEntries(value)) {
