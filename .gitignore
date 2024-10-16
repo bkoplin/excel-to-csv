@@ -131,3 +131,4 @@ dist
 .pnp.*
 exe
 .DS_Store
+.history

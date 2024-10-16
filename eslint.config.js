@@ -22,6 +22,19 @@ export default antfu(
         max: 1,
         maxEOF: 0,
       }],
+      'style/padding-line-between-statements': ['error', {
+        blankLine: 'always',
+        prev: '*',
+        next: '*',
+      }, {
+        blankLine: 'never',
+        prev: 'import',
+        next: 'import',
+      }, {
+        blankLine: 'never',
+        prev: ['block', 'expression', 'block-like', 'multiline-block-like'],
+        next: ['block', 'expression', 'block-like', 'multiline-block-like'],
+      }],
       'style/function-paren-newline': ['error', 'consistent'],
       'node/prefer-global/process': ['error', 'always'],
       'style/object-curly-newline': ['error', {
