@@ -27,7 +27,7 @@ export const sheetRangeOption = new Option('-r, --range [range]', 'the range of 
 export const includesHeaderOption = new Option('-i, --range-includes-header', 'flag to indicate whether the range include the header row').preset<boolean>(true)
 .default(true)
 
-export const skipLinesOption = new Option('-s, --skip-lines [number]', 'the number of rows to skip before reading the CSV file')
+export const skipLinesOption = new Option('-l, --skip-lines [number]', 'the number of rows to skip before reading the CSV file')
   .preset(-1)
   .argParser((val) => {
     const n = toInt(val, null)

@@ -8,7 +8,6 @@ import type { GlobalOptions } from '../index'
 import type { FileMetrics } from './types'
 import { createWriteStream } from 'node:fs'
 import {
-  appendFile,
   readFile,
   writeFile,
 } from 'node:fs/promises'
@@ -17,6 +16,7 @@ import chalk from 'chalk'
 import filenamify from 'filenamify'
 import fs from 'fs-extra'
 import {
+  delay,
   findIndex,
   findLast,
   isEmpty,
@@ -45,6 +45,7 @@ import { filename } from 'pathe/utils'
 import {
   alphabetical,
   mapValues,
+  omit,
   pick,
   shake,
   zipToObject,
@@ -153,26 +154,57 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
                 category,
               })
 
+              const outputFilePath = format({
+                ...parsedOutputFile,
+                name: generateCsvFileName({
+                  fileNumber: defaultFileNumber,
+                  category,
+                }),
+              })
+
+              const stream = createWriteStream(outputFilePath, 'utf-8')
+
+              stream.on('finish', () => {
+                parser.pause()
+                chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+                delay(() => parser.resume(), 1500)
+              })
+              stream.write(`${csvOutput}\n`)
               activeFileObject = {
                 BYTES: csvRowLength,
                 FILENUM: (maxFileSizeInMb ? 1 : undefined),
                 ROWS: 1,
                 CATEGORY: category,
                 FILTER: filters,
-                PATH: format({
-                  ...parsedOutputFile,
-                  name: generateCsvFileName({
-                    fileNumber: defaultFileNumber,
-                    category,
-                  }),
-                }),
+                PATH: outputFilePath,
+                stream,
               }
               spinner.text = chalk.yellow(`CREATED "${defaultCsvFileName}"`)
-              await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+              // await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
               files.push(activeFileObject)
             }
             else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-              spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
+              // spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
+              if (activeFileObject.stream?.writableNeedDrain) {
+                activeFileObject.stream.once('drain', () => {
+                  activeFileObject!.stream!.end()
+                })
+              }
+              else {
+                activeFileObject.stream!.end()
+              }
+
+              const outputFilePath = format({
+                ...parsedOutputFile,
+                name: generateCsvFileName({
+                  fileNumber: activeFileObject.FILENUM! + 1,
+                  category,
+                }),
+              })
+
+              const stream = createWriteStream(outputFilePath, 'utf-8')
+
+              stream.write(`${csvOutput}\n`)
 
               // await delay(noop, 1500)
               const newActiveFileObject = {
@@ -180,17 +212,12 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
                 FILENUM: activeFileObject.FILENUM! + 1,
                 ROWS: 1,
                 FILTER: filters,
-                PATH: format({
-                  ...parsedOutputFile,
-                  name: generateCsvFileName({
-                    fileNumber: activeFileObject.FILENUM! + 1,
-                    category,
-                  }),
-                }),
+                PATH: outputFilePath,
                 CATEGORY: category!,
+                stream,
               }
 
-              await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+              // await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
               files.push(newActiveFileObject)
             }
             else {
@@ -200,7 +227,13 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
               const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
 
               files[currentFileIndex] = activeFileObject
-              await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
+              if (!activeFileObject.stream!.write(`${csvOutput}\n`)) {
+                parser.pause()
+                activeFileObject.stream!.once('drain', () => {
+                  parser.resume()
+                })
+              }
+              // await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
             }
             if ((parsedLines % 1000) === 0) {
               const totalRows = sumBy(files, 'ROWS')
@@ -218,7 +251,7 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
       const parseResults = alphabetical(files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
 
       const parseOutputs = files.map((o) => {
-        return mapValues(shake(o, v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
+        return mapValues(shake(omit(o, ['stream']), v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
       })
 
       const parseResultsCsv = Papa.unparse(parseOutputs)

@@ -1,3 +1,4 @@
+import type { WriteStream } from 'node:fs'
 import type { JsonPrimitive } from 'type-fest'
 
 export interface FileMetrics {
@@ -7,4 +8,5 @@ export interface FileMetrics {
   PATH: string
   CATEGORY?: string
   FILTER?: Record<string, JsonPrimitive[]> | undefined
+  stream?: WriteStream
 }
