@@ -88,7 +88,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
   let parsedLines = 0
 
-  Papa.parse<Record<string, JsonPrimitive> | JsonPrimitive[] >(inputFile, {
+  Papa.parse<JsonPrimitive[] >(inputFile, {
     async step(results, parser) {
       // parser.pause()
       // bytesRead += results.meta.cursor
@@ -99,9 +99,9 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       //   skippedLines++
       // }
       // else {
-      else if (headerFile.writable && !fields.length && options.header === true && Array.isArray(results.meta.fields)) {
-        // if (Array.isArray(results.meta.fields)) {
-        fields = results.meta.fields
+      else if (headerFile.writable && !fields.length && options.header === true && Array.isArray(results.data)) {
+        // if (Array.isArray(results.data)) {
+        fields = formatHeaderValues({ data: results.data })
         headerFile.end(Papa.unparse([fields]))
         // }
         // else if (Array.isArray(results.data)) {
@@ -155,7 +155,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
           let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
 
-          const csvOutput = Papa.unparse([results.data], { header: false })
+          const csvOutput = Papa.unparse([results.data])
 
           const csvRowLength = Buffer.from(csvOutput).length
 
@@ -406,9 +406,9 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       spinner.fail(chalk.red('FAILED TO PARSE FILES\n') + error)
     },
 
-    header: options.header,
-    transformHeader: value => value.trim() ? value.trim() : 'EMPTY_HEADER',
-    transform: value => value.trim(),
+    // header: options.header,
+    // transformHeader: value => value.trim(),
+    // transform: value => value.trim(),
     // dynamicTyping: true,
   })
   function generateCsvFileName({

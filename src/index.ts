@@ -76,8 +76,6 @@ const _excelCommands = program.command('excel')
     globalOptions.command = 'Excel'
     globalOptions.filePath = await checkAndResolveFilePath('Excel', globalOptions.filePath)
 
-    const parsedOutputFile = generateParsedCsvFilePath(parse(globalOptions.filePath), globalOptions.rowFilters)
-
     const {
       wb,
       bytesRead,
@@ -86,6 +84,12 @@ const _excelCommands = program.command('excel')
     if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
       globalOptions.sheet = await setSheetName(wb)
     }
+
+    const parsedOutputFile = generateParsedCsvFilePath({
+      parsedInputFile: parse(globalOptions.filePath),
+      filters: globalOptions.rowFilters,
+      sheetName: globalOptions.sheet,
+    })
 
     const ws = wb.Sheets[globalOptions.sheet!]
 
@@ -109,7 +113,7 @@ const _excelCommands = program.command('excel')
 
     const data: (Primitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
 
-    const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
+    const csv = Papa.unparse(data, { delimiter: '|' })
 
     const commandLineString = generateCommandLineString(globalOptions, command)
 
@@ -137,7 +141,10 @@ const _csvCommands = program.command('csv')
     globalOptions.command = 'CSV'
     globalOptions.filePath = await checkAndResolveFilePath('CSV', globalOptions.filePath)
 
-    const parsedOutputFile = generateParsedCsvFilePath(parse(globalOptions.filePath), globalOptions.rowFilters)
+    const parsedOutputFile = generateParsedCsvFilePath({
+      parsedInputFile: parse(globalOptions.filePath),
+      filters: globalOptions.rowFilters,
+    })
 
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
       parsedCommandOptions: globalOptions,

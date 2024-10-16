@@ -12,6 +12,7 @@ import { select } from '@inquirer/prompts'
 import colors from 'chalk'
 import dayjs from 'dayjs'
 import fg from 'fast-glob'
+import filenamify from 'filenamify'
 import fs from 'fs-extra'
 import inquirerFileSelector from 'inquirer-file-selector'
 import {
@@ -108,11 +109,24 @@ export function selectStartingFolder(fileType: 'Excel' | 'CSV'): Promise<string>
     choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
   })
 }
-export function generateParsedCsvFilePath(parsedInputFile: ParsedPath, filters: GlobalOptions['rowFilters']): Omit<ParsedPath, 'base'> {
+export function generateParsedCsvFilePath({
+  parsedInputFile,
+  filters,
+  sheetName,
+}: {
+  parsedInputFile: ParsedPath
+  filters: GlobalOptions['rowFilters']
+  sheetName?: string
+}): Omit<ParsedPath, 'base'> {
   const parsedOutputFile = omit(parsedInputFile, ['base'])
 
   parsedOutputFile.ext = '.csv'
-  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
+  if (typeof sheetName !== 'undefined') {
+    parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, filenamify(sheetName), dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
+  }
+  else {
+    parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
+  }
   // parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
   fs.emptyDirSync(parsedOutputFile.dir)
 
@@ -122,7 +136,7 @@ export function generateCommandLineString(combinedOptions: ExcelOptionsWithGloba
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
     const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as keyof GlobalOptions, o => o.long)
 
-    if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) === 'cli' && typeof value !== 'undefined') {
+    if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) !== 'implied' && command.getOptionValueSourceWithGlobals(key) !== 'default' && typeof value !== 'undefined') {
       if (isObject(value)) {
         if (!isEmpty(value)) {
           for (const [k, v] of objectEntries(value)) {

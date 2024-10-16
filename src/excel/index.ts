@@ -8,7 +8,11 @@ import {
   select,
 } from '@inquirer/prompts'
 import chalk from 'chalk'
-import { range } from 'lodash-es'
+import {
+  isNil,
+  isUndefined,
+  range,
+} from 'lodash-es'
 import ora from 'ora'
 import { inRange } from 'radash'
 import XLSX from 'xlsx'
@@ -234,9 +238,25 @@ export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkS
     for (const colIndex of colIndices) {
       const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
 
-      row.push(cell?.v ?? null)
+      if (isUndefined(cell)) {
+        row.push('')
+      }
+      else {
+        const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : cell.v
+
+        // if (/\r|\n/.test(`${cellValue}`))
+        //   row.push(JSON.stringify(cellValue))
+        // else
+        row.push(cellValue)
+      }
     }
+    // if (row.some(v => /1404 {2}Rockville Pike/.test(`${v}`))) {
+    //   console.log(row)
+    // }
     data.push(row)
+    // if (rowIndex === 13 || rowIndex === 14) {
+    //   console.log(row)
+    // }
   }
 
   return data
