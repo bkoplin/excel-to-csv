@@ -87,11 +87,14 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
 
   let skippedLines = 0
 
+  let bytesRead = 0
+
   let parsedLines = 0
 
   Papa.parse<JsonPrimitive[]>(inputFile, {
     async step(results, parser) {
       // parser.pause()
+      bytesRead += results.meta.cursor
       if (rowCount === parsedLines) {
         parser.abort()
       }
@@ -102,6 +105,9 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
         if (headerFile.writable && Array.isArray(results.data) && !fields.length) {
           fields = results.data as string[]
           headerFile.end(Papa.unparse([formatHeaderValues(results)]))
+        }
+        else if (Array.isArray(results.data) && fields.length && results.data.length !== fields.length) {
+          skippedLines++
         }
         else {
           const thisRow = zipToObject(fields, results.data)
@@ -149,10 +155,10 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
             if (isUndefined(activeFileObject)) {
               const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
 
-              const defaultCsvFileName = generateCsvFileName({
-                fileNumber: defaultFileNumber,
-                category,
-              })
+              // const defaultCsvFileName = generateCsvFileName({
+              //   fileNumber: defaultFileNumber,
+              //   category,
+              // })
 
               const outputFilePath = format({
                 ...parsedOutputFile,
@@ -164,10 +170,13 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
 
               const stream = createWriteStream(outputFilePath, 'utf-8')
 
-              stream.on('finish', () => {
+              stream.on('close', () => {
                 parser.pause()
-                chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
-                delay(() => parser.resume(), 1500)
+
+                const totalRows = sumBy(files, 'ROWS')
+
+                spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)};"`)
+                delay(() => parser.resume(), 500)
               })
               stream.write(`${csvOutput}\n`)
               activeFileObject = {
@@ -179,19 +188,24 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
                 PATH: outputFilePath,
                 stream,
               }
-              spinner.text = chalk.yellow(`CREATED "${defaultCsvFileName}"`)
+              parser.pause()
+
+              const totalRows = sumBy(files, 'ROWS')
+
+              spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
               // await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
               files.push(activeFileObject)
+              delay(() => parser.resume(), 500)
             }
             else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
               // spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
               if (activeFileObject.stream?.writableNeedDrain) {
                 activeFileObject.stream.once('drain', () => {
-                  activeFileObject!.stream!.end()
+                  activeFileObject!.stream!.close()
                 })
               }
               else {
-                activeFileObject.stream!.end()
+                activeFileObject.stream!.close()
               }
 
               const outputFilePath = format({
@@ -246,6 +260,23 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
       // parser.resume()
     },
     complete: async () => {
+      for (const file of files) {
+        if (file.stream?.writableEnded !== true) {
+          await new Promise((resolve) => {
+            if (file.stream?.writableNeedDrain) {
+              file.stream.once('drain', () => {
+                file.stream!.close()
+                resolve(true)
+              })
+            }
+            else {
+              file.stream?.close()
+              resolve(true)
+            }
+          })
+        }
+      }
+
       const maxFileNumLength = `${maxBy(files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length
 
       const parseResults = alphabetical(files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
@@ -263,11 +294,21 @@ export default async function<Options extends Simplify<GlobalOptions & { parsedO
       const totalFiles = files.length
 
       const summaryString = yaml.stringify({
-        'TOTAL ROWS': numbro(totalRows).format({ thousandSeparated: true }),
-        'TOTAL BYTES': numbro(totalBytes).format({
+        'TOTAL NON-HEADER ROWS PARSED': numbro(parsedLines).format({ thousandSeparated: true }),
+        'TOTAL NON-HEADER ROWS SKIPPED': numbro(skippedLines).format({ thousandSeparated: true }),
+        'TOTAL NON-HEADER ROWS WRITTEN': numbro(totalRows).format({ thousandSeparated: true }),
+        'TOTAL BYTES READ': numbro(bytesRead).format({
           output: 'byte',
           spaceSeparated: true,
-          base: 'general',
+          base: 'binary',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
+        }),
+        'TOTAL BYTES WRITTEN': numbro(totalBytes).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'binary',
           average: true,
           mantissa: 2,
           optionalMantissa: true,

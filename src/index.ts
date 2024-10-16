@@ -92,7 +92,9 @@ const _excelCommands = program.command('excel')
       globalOptions.range = await setRange(wb, globalOptions.sheet)
       isOverlappingRange(ws, globalOptions.range)
     }
-    globalOptions.rangeIncludesHeader = await setRangeIncludesHeader(globalOptions.range, globalOptions.rangeIncludesHeader)
+
+    if (isUndefined(globalOptions.rangeIncludesHeader))
+      globalOptions.rangeIncludesHeader = await setRangeIncludesHeader(globalOptions.range, globalOptions.rangeIncludesHeader)
 
     if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true)
       globalOptions.header = false
