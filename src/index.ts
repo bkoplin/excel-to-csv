@@ -1,56 +1,41 @@
-#!/usr/bin/env esno
-import {
-  ReadStream,
-  createReadStream,
-} from 'node:fs'
 import type { ParsedPath } from 'node:path'
-import {
-  Command,
-  Option,
-} from '@commander-js/extra-typings'
 import type {
-  JsonPrimitive,
-  JsonValue,
-  Merge,
-  SetFieldType,
+  Primitive,
   Simplify,
 } from 'type-fest'
-import Papa from 'papaparse'
 import {
-  isEmpty,
-  isNull,
-  isUndefined,
-  range as lRange,
-} from 'lodash-es'
-import { filename } from 'pathe/utils'
+  createReadStream,
+  ReadStream,
+} from 'node:fs'
+import { createInterface } from 'node:readline'
+import { PassThrough } from 'node:stream'
+import { Command } from '@commander-js/extra-typings'
+import fs from 'fs-extra'
+import { isUndefined } from 'lodash-es'
 import ora from 'ora'
-
+import Papa from 'papaparse'
 import {
   join,
   parse,
 } from 'pathe'
-import fs from 'fs-extra'
+import { filename } from 'pathe/utils'
 import yaml from 'yaml'
-import { objectEntries } from '@antfu/utils'
-import {
-  isObject,
-  isPrimitive,
-  objectify,
-} from 'radash'
 import pkg from '../package.json'
 import {
   categoryOption,
   filterTypeOption,
   filterValuesOption,
+  includesHeaderOption,
   makeFilePathOption,
   maxFileSizeOption,
+  rowCountOption,
+  sheetNameOption,
+  sheetRangeOption,
+  skipLinesOption,
   writeHeaderOption,
 } from './arguments'
 import {
-  checkAndResolveFilePath,
-  generateParsedCsvFilePath,
-} from './helpers'
-import {
+  extractDataFromWorksheet,
   extractRangeInfo,
   getWorkbook,
   isOverlappingRange,
@@ -58,166 +43,192 @@ import {
   setRangeIncludesHeader,
   setSheetName,
 } from './excel'
+import {
+  checkAndResolveFilePath,
+  generateCommandLineString,
+  generateParsedCsvFilePath,
+} from './helpers'
 import writeCsv from './writeCsv'
 
-const program = new Command('parse').version(pkg.version)
+const program = new Command(pkg.name).version(pkg.version)
+.description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
+.showSuggestionAfterError(true)
+.configureHelp({
+  sortOptions: true,
+  sortSubcommands: true,
+  showGlobalOptions: true,
+})
+.addOption(filterValuesOption)
+.addOption(categoryOption)
+.addOption(filterTypeOption)
+.addOption(maxFileSizeOption)
+.addOption(writeHeaderOption)
 
-  .description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
-
-  .showSuggestionAfterError(true)
-  .configureHelp({
-    sortOptions: true,
-    sortSubcommands: true,
-    showGlobalOptions: true,
-  })
-
-  .addOption(filterValuesOption)
-  .addOption(categoryOption)
-  .addOption(filterTypeOption)
-  .addOption(maxFileSizeOption)
-  .addOption(writeHeaderOption)
-
-export type GlobalOptions = Simplify<SetFieldType<ReturnType<typeof program.opts>, 'fileSize', number | undefined> & {
-  inputFilePath: string
-  parsedOutputFile: Omit<ParsedPath, 'base'>
-}>
-
-program.command('excel')
+const _excelCommands = program.command('excel')
   .description('Parse an Excel file')
   .addOption(makeFilePathOption('Excel'))
-  .addOption(new Option('--sheet [sheet name]', 'the sheet containing the data to parse to CSV').default(undefined)
-    .preset(''))
-  .addOption(new Option('--range [range]', 'the range of cells to parse in the Excel file').preset('')
-    .default(undefined))
-  .addOption(new Option('-r, --range-includes-header', 'flag to indicate whether the range include the header row').preset<boolean>(true))
+  .addOption(sheetNameOption)
+  .addOption(sheetRangeOption)
+  .addOption(includesHeaderOption)
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals < Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
-    let {
-      header,
-      rowFilters,
-      range,
-      sheet,
-      rangeIncludesHeader,
-      filePath,
-    } = globalOptions
-    filePath = await checkAndResolveFilePath('Excel', filePath)
-    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
-    const wb = await getWorkbook(filePath)
-    if (isUndefined(sheet) || typeof sheet !== 'string' || !wb.SheetNames.includes(sheet)) {
-      sheet = await setSheetName(wb)
+    const globalOptions = command.optsWithGlobals < ExcelOptionsWithGlobals>()
+
+    globalOptions.command = 'Excel'
+    globalOptions.filePath = await checkAndResolveFilePath('Excel', globalOptions.filePath)
+
+    const {
+      wb,
+      bytesRead,
+    } = await getWorkbook(globalOptions.filePath)
+
+    if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
+      globalOptions.sheet = await setSheetName(wb)
     }
-    const ws = wb.Sheets[sheet!]
+
+    const parsedOutputFile = generateParsedCsvFilePath({
+      parsedInputFile: parse(globalOptions.filePath),
+      filters: globalOptions.rowFilters,
+      sheetName: globalOptions.sheet,
+    })
+
+    const ws = wb.Sheets[globalOptions.sheet!]
+
+    parsedOutputFile.name = `${parsedOutputFile.name} ${globalOptions.sheet}`
     if (typeof ws === 'undefined') {
-      ora(`The worksheet "${sheet}" does not exist in the Excel file ${filename(filePath)}`).fail()
+      ora(`The worksheet "${globalOptions.sheet}" does not exist in the Excel file ${filename(globalOptions.filePath)}`).fail()
       process.exit(1)
     }
-    if (!isOverlappingRange(ws, range)) {
-      range = await setRange(wb, sheet)
-    }
-    if (isUndefined(rangeIncludesHeader)) {
-      rangeIncludesHeader = await setRangeIncludesHeader(range) as true
-    }
-    if (rangeIncludesHeader === false && header === true)
-      header = false
-    const {
-      parsedRange,
-      isRowInRange,
-    } = extractRangeInfo(ws, range)
-    const data: (JsonPrimitive | Date)[][] = []
-    const rowIndices = lRange(parsedRange.s.r, parsedRange.e.r + 1)
-    const colIndices = lRange(parsedRange.s.c, parsedRange.e.c + 1)
-    for (const rowIndex of rowIndices) {
-      const row: (JsonPrimitive | Date)[] = []
-      for (const colIndex of colIndices) {
-        // const cellRef = XLSX.utils.encode_cell({
-        //   r: rowIndex,
-        //   c: colIndex,
-        // })
-        const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
-        row.push(cell?.v ?? null)
-      }
-      data.push(row)
+    if (!isOverlappingRange(ws, globalOptions.range)) {
+      globalOptions.range = await setRange(wb, globalOptions.sheet)
+      isOverlappingRange(ws, globalOptions.range)
     }
 
-    const csv = Papa.unparse(data, { header: globalOptions.rangeIncludesHeader })
+    if (isUndefined(globalOptions.rangeIncludesHeader))
+      globalOptions.rangeIncludesHeader = await setRangeIncludesHeader(globalOptions.range, globalOptions.rangeIncludesHeader)
 
-    const combinedOptions = {
-      ...globalOptions,
-      parsedOutputFile,
-      filePath,
-      range,
-      sheet,
-      header,
-    }
-    const commandLineString = generateCommandLineString(combinedOptions, command)
+    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true)
+      globalOptions.header = false
+
+    const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
+
+    const data: (Primitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
+
+    const csv = Papa.unparse(data, { delimiter: '|' })
+
+    const commandLineString = generateCommandLineString(globalOptions, command)
+
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
-      combinedOptions,
+      parsedCommandOptions: globalOptions,
       commandLineString,
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
     writeCsv(ReadStream.from(csv), {
       ...globalOptions,
-      header,
-      inputFilePath: filePath,
       parsedOutputFile,
+      bytesRead,
     })
   })
 
-program.command('csv')
+const _csvCommands = program.command('csv')
   .description('Parse a CSV file')
   .addOption(makeFilePathOption('CSV'))
+  .addOption(skipLinesOption)
+  .addOption(rowCountOption)
   .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals<Merge<GlobalOptions, ReturnType<typeof command.opts>>>()
-    let {
-      header,
-      rowFilters,
-      filePath,
-    } = globalOptions
-    filePath = await checkAndResolveFilePath('CSV', options.filePath as string)
-    const parsedOutputFile = generateParsedCsvFilePath(parse(filePath), rowFilters as Record<string, Array<JsonPrimitive>>)
-    const combinedOptions = {
-      ...globalOptions,
-      parsedOutputFile,
-      filePath,
-    }
+    const globalOptions = command.optsWithGlobals<CSVOptionsWithGlobals>()
+
+    globalOptions.command = 'CSV'
+    globalOptions.filePath = await checkAndResolveFilePath('CSV', globalOptions.filePath)
+
+    const parsedOutputFile = generateParsedCsvFilePath({
+      parsedInputFile: parse(globalOptions.filePath),
+      filters: globalOptions.rowFilters,
+    })
+
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
-      combinedOptions,
-      commandLineString: generateCommandLineString(combinedOptions, command),
+      parsedCommandOptions: globalOptions,
+      commandLineString: generateCommandLineString(globalOptions, command),
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
-    writeCsv(createReadStream(filePath), {
-      ...globalOptions,
-      header,
-      inputFilePath: filePath,
-      parsedOutputFile,
+
+    const sourceStream = createReadStream(globalOptions.filePath, 'utf-8')
+
+    const inputStreamReader = new PassThrough({ encoding: 'utf-8' })
+
+    const lineReader = createInterface({ input: sourceStream })
+
+    let skippedLines = 0
+
+    let bytesRead = 0
+
+    // let rowCount = 0
+
+    lineReader.on('close', () => {
+    // inputStreamReader.on('end', () => {
+      // lineReader.close()
+      writeCsv(inputStreamReader, {
+        ...globalOptions,
+        parsedOutputFile,
+        skippedLines: skippedLines - 1,
+        // rowCount,
+        bytesRead,
+      })
+    })
+    // })
+
+    // const lines = []
+
+    lineReader.on('line', (line) => {
+      if ('skipLines' in globalOptions && (globalOptions.skipLines || -1) > 0 && skippedLines < (globalOptions.skipLines || -1)) {
+        skippedLines++
+      }
+      else {
+        const formattedLine = `${line}\n`
+
+        // if ('rowCount' in globalOptions && globalOptions.rowCount !== -1 && globalOptions.rowCount < rowCount) {
+        //   bytesRead += Buffer.from(formattedLine).length
+        //   rowCount++
+        //   lineReader.close()
+        // }
+        // else {
+        bytesRead += Buffer.from(formattedLine).length
+        // rowCount++
+        // lineReader.pause()
+        inputStreamReader.write(formattedLine)
+      }
     })
   })
 
-for (const cmd of program.commands) {
-  cmd.option('-d, --debug')
-}
-program.parse(process.argv)
-export type CommandOptions = Merge<ReturnType<typeof program.opts>, { inputFilePath: string }>
+type CsvCommand = typeof _csvCommands
 
-function generateCommandLineString(combinedOptions: Record<string | number, JsonValue | undefined>, command: Command & { _name?: string }): string {
-  return objectEntries(combinedOptions).reduce((acc, [key, value]): string => {
-    const optionFlags = objectify([...command.options, ...command.parent?.options ?? []], o => o.attributeName(), o => o.long)
-    if (key in optionFlags) {
-      if (!Array.isArray(value)) {
-        if (isPrimitive(value)) {
-          acc += ` \\\n${optionFlags[key]} ${JSON.stringify(value)}`
-        }
-        else if (isObject(value) && !isEmpty(value)) {
-          acc += ` \\\n${optionFlags[key]} ${objectEntries(value).map(([k, v]) => `${(JSON.stringify(k))}:${(JSON.stringify(v))}`)
-            .join(' ')}`
-        }
-      }
-      else if (!isNull(value) && !isUndefined(value) && !isEmpty(value)) {
-        acc += ` \\\n${optionFlags[key]} ${value.map(v => JSON.stringify(v)).join(' ')}`
-      }
-    }
-    return acc
-  }, command._name!)
-}
+type ExcelCommand = typeof _excelCommands
+
+type ProgramCommand = typeof program
+
+export type CSVOptions = ReturnType<CsvCommand['opts']>
+
+export type ExcelOptions = ReturnType<ExcelCommand['opts']>
+
+export type CSVOptionsWithGlobals = Simplify<CSVOptions & ProgramCommandOptions & {
+  skippedLines: number
+  rowCount: number
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  bytesRead: number
+  command: `CSV`
+}>
+
+export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOptions & {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  bytesRead: number
+  command: `Excel`
+}>
+
+export type ProgramCommandOptions = ReturnType<ProgramCommand['opts']>
+
+export type GlobalProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
+
+export type GlobalOptions = { [Prop in keyof GlobalProgramOptions]: boolean extends GlobalProgramOptions[Prop] ? GlobalProgramOptions[Prop] : Exclude<GlobalProgramOptions[Prop], true> }
+
+program.parse(process.argv)

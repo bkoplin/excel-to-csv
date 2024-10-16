@@ -1,3 +1,5 @@
+import type { WriteStream } from 'node:fs'
+import type { JsonPrimitive } from 'type-fest'
 
 export interface FileMetrics {
   BYTES: number
@@ -5,11 +7,6 @@ export interface FileMetrics {
   ROWS: number
   PATH: string
   CATEGORY?: string
-}
-export interface SplitOptions {
-  inputFilePath: string
-  filterValues?: string[][]
-  categoryField?: string
-  maxFileSizeInMb?: number
-  writeHeaderOnEachFile?: boolean
+  FILTER?: Record<string, JsonPrimitive[]> | undefined
+  stream?: WriteStream
 }
