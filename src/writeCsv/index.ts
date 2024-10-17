@@ -90,24 +90,13 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
   Papa.parse<JsonPrimitive[] >(inputFile, {
     async step(results, parser) {
-      // parser.pause()
-      // bytesRead += results.meta.cursor
       if ('rowCount' in options && options.rowCount === parsedLines) {
         parser.abort()
       }
-      // if ('skipLines' in options && (options.skipLines || -1) > 0 && skippedLines < (options.skipLines || -1)) {
-      //   skippedLines++
-      // }
-      // else {
+
       else if (headerFile.writable && !fields.length && options.header === true && Array.isArray(results.data)) {
-        // if (Array.isArray(results.data)) {
         fields = formatHeaderValues({ data: results.data })
         headerFile.end(Papa.unparse([fields]))
-        // }
-        // else if (Array.isArray(results.data)) {
-        //   fields = Object.keys(results.data[0])
-        //   headerFile.end(Papa.unparse([fields]))
-        // }
       }
       else if (Array.isArray(results.data) && fields.length && results.data.length !== fields.length) {
         skippedLines++
@@ -162,11 +151,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
           if (isUndefined(activeFileObject)) {
             const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
 
-            // const defaultCsvFileName = generateCsvFileName({
-            //   fileNumber: defaultFileNumber,
-            //   category,
-            // })
-
             const outputFilePath = format({
               ...parsedOutputFile,
               name: generateCsvFileName({
@@ -200,12 +184,10 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
             const totalRows = sumBy(files, 'ROWS')
 
             spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
-            // await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
             files.push(activeFileObject)
             delay(() => parser.resume(), 500)
           }
           else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-            // spinner.text = chalk.yellow(`FINISHED WITH "${filename(activeFileObject.PATH)}"`)
             if (activeFileObject.stream?.writableNeedDrain) {
               activeFileObject.stream.once('drain', () => {
                 activeFileObject!.stream!.close()
@@ -227,7 +209,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
             stream.write(`${csvOutput}\n`)
 
-            // await delay(noop, 1500)
             const newActiveFileObject = {
               BYTES: csvRowLength,
               FILENUM: activeFileObject.FILENUM! + 1,
@@ -238,7 +219,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
               stream,
             }
 
-            // await appendFile(newActiveFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
             files.push(newActiveFileObject)
           }
           else {
@@ -254,7 +234,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
                 parser.resume()
               })
             }
-            // await appendFile(activeFileObject.PATH, `${csvOutput}\n`, { encoding: 'utf-8' })
           }
           if ((parsedLines % 1000) === 0) {
             const totalRows = sumBy(files, 'ROWS')
@@ -263,8 +242,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
           }
         }
       }
-      // }
-      // parser.resume()
     },
     complete: async () => {
       for (const file of files) {
@@ -321,7 +298,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
           optionalMantissa: true,
         }),
         'TOTAL FILES': numbro(totalFiles).format({ thousandSeparated: true }),
-        // 'OUTPUT FILES': parseResults,
+
       })
 
       fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
@@ -406,10 +383,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       spinner.fail(chalk.red('FAILED TO PARSE FILES\n') + error)
     },
 
-    // header: options.header,
-    // transformHeader: value => value.trim(),
-    // transform: value => value.trim(),
-    // dynamicTyping: true,
   })
   function generateCsvFileName({
     fileNumber,
@@ -420,13 +393,9 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
   } = {}): string {
     let csvFileName = parsedOutputFile.name
 
-    // const nonAlphaNumericPattern = /[^A-Z0-9]/gi
-
     if (typeof category !== 'undefined' && category !== null)
       csvFileName += ` ${category}`
 
-    // csvFileName += ` ${category.replace(nonAlphaNumericPattern, '_')}`
-    // csvFileName += ` ${upperFirst(camelCase(category))}`
     if (typeof fileNumber !== 'undefined')
       csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`
 

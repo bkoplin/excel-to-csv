@@ -1,9 +1,15 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { ParsedPath } from 'node:path'
 import type {
-  CSVOptionsWithGlobals,
-  ExcelOptionsWithGlobals,
-  GlobalOptions,
+  EmptyObject,
+  Merge,
+  StringKeyOf,
+} from 'type-fest'
+import type {
+  CombinedProgramOptions,
+  CSVOptions,
+  ExcelOptions,
+  ProgramCommandOptions,
 } from './index'
 import { homedir } from 'node:os'
 import { objectEntries } from '@antfu/utils'
@@ -115,7 +121,7 @@ export function generateParsedCsvFilePath({
   sheetName,
 }: {
   parsedInputFile: ParsedPath
-  filters: GlobalOptions['rowFilters']
+  filters: CombinedProgramOptions['rowFilters']
   sheetName?: string
 }): Omit<ParsedPath, 'base'> {
   const parsedOutputFile = omit(parsedInputFile, ['base'])
@@ -127,18 +133,17 @@ export function generateParsedCsvFilePath({
   else {
     parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
   }
-  // parsedOutputFile.name = filters.length ? `${parsedInputFile.name} FILTERED` : parsedInputFile.name
   fs.emptyDirSync(parsedOutputFile.dir)
 
   return parsedOutputFile
 }
-export function generateCommandLineString(combinedOptions: ExcelOptionsWithGlobals | CSVOptionsWithGlobals, command: Command & { _name?: string }): string {
+export function generateCommandLineString(combinedOptions: Merge<CSVOptions, ProgramCommandOptions> | Merge<ExcelOptions, ProgramCommandOptions>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
-    const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as keyof GlobalOptions, o => o.long)
+    const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as StringKeyOf<CombinedProgramOptions>, o => o.long as string)
 
     if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) !== 'implied' && command.getOptionValueSourceWithGlobals(key) !== 'default' && typeof value !== 'undefined') {
       if (isObject(value)) {
-        if (!isEmpty(value)) {
+        if (!isEmptyObject(value)) {
           for (const [k, v] of objectEntries(value)) {
             if (isArray(v)) {
               for (const val of v) acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${val}`)} `
@@ -147,9 +152,6 @@ export function generateCommandLineString(combinedOptions: ExcelOptionsWithGloba
               acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${v}`)} `
             }
           }
-        }
-        else if (!isNull(value)) {
-          acc += ` \\\n${optionFlags[key]} ${stringifyValue(value)} `
         }
       }
       else if (!isNull(value)) {
@@ -169,4 +171,7 @@ export function stringifyValue(val: any): any {
     return `'${val}'`
 
   return val
+}
+export function isEmptyObject(obj: any): obj is EmptyObject {
+  return isObject(obj) && Object.keys(obj).length === 0
 }

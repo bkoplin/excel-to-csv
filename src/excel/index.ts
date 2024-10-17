@@ -244,19 +244,10 @@ export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkS
       else {
         const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : cell.v
 
-        // if (/\r|\n/.test(`${cellValue}`))
-        //   row.push(JSON.stringify(cellValue))
-        // else
         row.push(cellValue)
       }
     }
-    // if (row.some(v => /1404 {2}Rockville Pike/.test(`${v}`))) {
-    //   console.log(row)
-    // }
     data.push(row)
-    // if (rowIndex === 13 || rowIndex === 14) {
-    //   console.log(row)
-    // }
   }
 
   return data

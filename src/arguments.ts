@@ -92,12 +92,12 @@ export const categoryOption = new Option(
 export const maxFileSizeOption = new Option(
   '-s, --file-size [number]',
   'the maximum size of each file in MB (if not set, the files will not be split by size)',
-).preset<undefined | string>(undefined)
-.argParser((val): number | undefined => typeof val === 'undefined' || val === null || isNaN(toNumber(val)) ? undefined : toNumber(val))
+)
+  .preset<undefined | string>(undefined)
+  .argParser((val): number | undefined => typeof val === 'undefined' || val === null || isNaN(toNumber(val)) ? undefined : toNumber(val))
 
 export const filterTypeOption = new Option('-t, --match-type [choice]', 'the type of match to use when filtering rows')
   .choices([`all`, `any`, `none`] as const)
-  // .default<`all`>(`all`)
   .preset<`all` | `any` | `none`>(`all`)
 
 export const writeHeaderOption = new Option(

@@ -163,23 +163,15 @@ const _csvCommands = program.command('csv')
 
     let bytesRead = 0
 
-    // let rowCount = 0
-
     lineReader.on('close', () => {
-    // inputStreamReader.on('end', () => {
-      // lineReader.close()
       writeCsv(inputStreamReader, {
         ...globalOptions,
         parsedOutputFile,
         skippedLines: skippedLines - 1,
-        // rowCount,
+
         bytesRead,
       })
     })
-    // })
-
-    // const lines = []
-
     lineReader.on('line', (line) => {
       if ('skipLines' in globalOptions && (globalOptions.skipLines || -1) > 0 && skippedLines < (globalOptions.skipLines || -1)) {
         skippedLines++
@@ -187,15 +179,7 @@ const _csvCommands = program.command('csv')
       else {
         const formattedLine = `${line}\n`
 
-        // if ('rowCount' in globalOptions && globalOptions.rowCount !== -1 && globalOptions.rowCount < rowCount) {
-        //   bytesRead += Buffer.from(formattedLine).length
-        //   rowCount++
-        //   lineReader.close()
-        // }
-        // else {
         bytesRead += Buffer.from(formattedLine).length
-        // rowCount++
-        // lineReader.pause()
         inputStreamReader.write(formattedLine)
       }
     })
@@ -211,6 +195,8 @@ export type CSVOptions = ReturnType<CsvCommand['opts']>
 
 export type ExcelOptions = ReturnType<ExcelCommand['opts']>
 
+export type ProgramCommandOptions = ReturnType<ProgramCommand['opts']>
+
 export type CSVOptionsWithGlobals = Simplify<CSVOptions & ProgramCommandOptions & {
   skippedLines: number
   rowCount: number
@@ -225,10 +211,6 @@ export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOpti
   command: `Excel`
 }>
 
-export type ProgramCommandOptions = ReturnType<ProgramCommand['opts']>
-
-export type GlobalProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
-
-export type GlobalOptions = { [Prop in keyof GlobalProgramOptions]: boolean extends GlobalProgramOptions[Prop] ? GlobalProgramOptions[Prop] : Exclude<GlobalProgramOptions[Prop], true> }
+export type CombinedProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
 
 program.parse(process.argv)
