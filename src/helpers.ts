@@ -40,7 +40,6 @@ import {
   basename,
   join,
   relative,
-  sep,
 } from 'pathe'
 import {
   isEmpty,
@@ -51,21 +50,56 @@ import pkg from '../package.json'
 
 /* async_RS reads a stream and returns a Promise resolving to a workbook */
 
-export async function checkAndResolveFilePath(fileType: 'Excel' | 'CSV', argFilePath: string | undefined): Promise<string> {
-  if (typeof argFilePath === 'undefined' || !fs.existsSync(argFilePath)) {
-    ora().warn(colors.yellowBright(`No ${colors.yellowBright(fileType)} exists at path ${colors.cyanBright(`"${argFilePath}"`)}!`))
+export async function checkAndResolveFilePath(options: {
+  fileType: 'Excel' | 'CSV'
+  argFilePath: CombinedProgramOptions['filePath']
+}): Promise<string> {
+  let argFilePath = options.argFilePath
 
-    const startingFolder = await selectStartingFolder(fileType)
+  if (typeof argFilePath === 'undefined' || isEmpty(argFilePath)) {
+    ora().warn(colors.magentaBright(`You have not provided an input ${options.fileType} file.`))
 
-    const selectedFile = await selectFile(fileType, startingFolder)
+    const startingFolder = await selectStartingFolder(options.fileType)
 
-    return selectedFile
+    argFilePath = await selectFile(options.fileType, startingFolder)
+  }
+
+  else {
+    const pathFromCwd = join(process.cwd(), options.argFilePath)
+
+    const pathFromHome = join(homedir(), options.argFilePath)
+
+    const originalPath = options.argFilePath
+
+    if (fs.existsSync(originalPath)) {
+      argFilePath = originalPath
+    }
+    else if (fs.existsSync(pathFromCwd)) {
+      argFilePath = pathFromCwd
+    }
+    else if (fs.existsSync(pathFromHome)) {
+      argFilePath = pathFromHome
+    }
+    else {
+      ora().warn(colors.magentaBright(`Could not find ${options.fileType === 'CSV' ? 'a CSV' : 'an Excel'} file at the path ${colors.cyanBright(`"${options.argFilePath}"`)}!`))
+
+      const startingFolder = await selectStartingFolder(options.fileType)
+
+      argFilePath = await selectFile(options.fileType, startingFolder)
+    }
   }
 
   return Promise.resolve(argFilePath)
 }
 export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise<string> {
-  const fileExtString = fileType === 'Excel' ? `${colors.cyanBright('.xls')} or ${colors.cyanBright('.xlsx')}` : colors.cyanBright('csv')
+  let fileExtString
+
+  if (fileType === 'Excel') {
+    fileExtString = `${colors.cyanBright('.xls')} or ${colors.cyanBright('.xlsx')}`
+  }
+  else {
+    fileExtString = colors.cyanBright('csv')
+  }
 
   const pathRegexp = fileType === 'Excel'
     ? createRegExp(exactly('.'), exactly('xlsx').before(maybe('x')).at.lineEnd(), ['i'])
@@ -75,15 +109,11 @@ export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise
   return inquirerFileSelector({
     message: `Navigate to the ${colors.yellowBright(fileType)} file you want to parse (only files with an ${fileExtString} extension will be shown, and the file names must start with an alphanumeric character)`,
     basePath,
-    hideNonMatch: true,
+    // showExcluded: false,
     allowCancel: true,
     pageSize: 20,
     theme: { style: { currentDir: (text: string) => colors.magentaBright(join(`.`, basename(basePath), relative(basePath, text))) } },
     match(filePath) {
-      if (filePath.isDir) {
-        return !filePath.path.split(sep).some(v => /^[^A-Z0-9]/i.test(v))
-      }
-
       return !/^[^A-Z0-9]/i.test(filePath.name) && pathRegexp.test(filePath.name)
     },
   })
@@ -99,11 +129,13 @@ export function selectStartingFolder(fileType: 'Excel' | 'CSV'): Promise<string>
     value: folder,
   }))
 
-  const homeFolders = fg.sync(['Desktop', 'Documents', 'Downloads'], {
+  // const homeFolders = fg.sync(['!Desktop', 'Documents', 'Downloads'], {
+  const homeFolders = fg.sync([join(homedir(), '/**')], {
     onlyDirectories: true,
     absolute: true,
     cwd: homedir(),
     deep: 1,
+    dot: false,
   }).map(folder => ({
     name: basename(folder),
     value: folder,
@@ -112,7 +144,11 @@ export function selectStartingFolder(fileType: 'Excel' | 'CSV'): Promise<string>
   return select({
     message: `Where do you want to start looking for your ${colors.yellowBright(fileType)} file?`,
     pageSize: 20,
-    choices: [new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
+    choices: [new Separator('----CURRENT----'), {
+      name: basename(process.cwd()),
+      value: process.cwd(),
+
+    }, new Separator('----HOME----'), ...homeFolders, new Separator('----ONEDRIVE----'), ...cloudFolders],
   })
 }
 export function generateParsedCsvFilePath({
@@ -127,11 +163,17 @@ export function generateParsedCsvFilePath({
   const parsedOutputFile = omit(parsedInputFile, ['base'])
 
   parsedOutputFile.ext = '.csv'
+
+  const dateTimeString = dayjs().format('YYYY-MM-DD HH-mm')
+
+  const filteredIndicator = !isEmpty(filters) ? ' FILTERED' : ''
+
+  parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name}`)
   if (typeof sheetName !== 'undefined') {
-    parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, filenamify(sheetName), dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
+    parsedOutputFile.dir += ` ${filenamify(sheetName)}${filteredIndicator} ${dateTimeString}`
   }
   else {
-    parsedOutputFile.dir = join(parsedOutputFile.dir, `${parsedInputFile.name} PARSE JOBS`, dayjs().format('YYYY-MM-DD HH-mm') + (!isEmpty(filters) ? ' FILTERED' : ''))
+    parsedOutputFile.dir += ` ${filteredIndicator} ${dateTimeString}`
   }
   fs.emptyDirSync(parsedOutputFile.dir)
 
