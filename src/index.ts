@@ -74,7 +74,13 @@ const _excelCommands = program.command('excel')
     const globalOptions = command.optsWithGlobals < ExcelOptionsWithGlobals>()
 
     globalOptions.command = 'Excel'
-    globalOptions.filePath = await checkAndResolveFilePath('Excel', globalOptions.filePath)
+    globalOptions.filePath = await checkAndResolveFilePath({
+      fileType: 'Excel',
+      argFilePath: globalOptions.filePath,
+    })
+
+    if (command.getOptionValue('filePath') !== globalOptions.filePath)
+      command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
 
     const {
       wb,
@@ -83,6 +89,7 @@ const _excelCommands = program.command('excel')
 
     if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
       globalOptions.sheet = await setSheetName(wb)
+      command.setOptionValueWithSource('sheet', globalOptions.sheet, 'env')
     }
 
     const parsedOutputFile = generateParsedCsvFilePath({
@@ -100,14 +107,17 @@ const _excelCommands = program.command('excel')
     }
     if (!isOverlappingRange(ws, globalOptions.range)) {
       globalOptions.range = await setRange(wb, globalOptions.sheet)
+      command.setOptionValueWithSource('range', globalOptions.range, 'env')
       isOverlappingRange(ws, globalOptions.range)
     }
-
-    if (isUndefined(globalOptions.rangeIncludesHeader))
+    if (isUndefined(globalOptions.rangeIncludesHeader)) {
       globalOptions.rangeIncludesHeader = await setRangeIncludesHeader(globalOptions.range, globalOptions.rangeIncludesHeader)
-
-    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true)
+      command.setOptionValueWithSource('rangeIncludesHeader', globalOptions.rangeIncludesHeader, 'env')
+    }
+    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true) {
       globalOptions.header = false
+      command.parent?.setOptionValueWithSource('header', false, 'env')
+    }
 
     const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
 
@@ -139,7 +149,10 @@ const _csvCommands = program.command('csv')
     const globalOptions = command.optsWithGlobals<CSVOptionsWithGlobals>()
 
     globalOptions.command = 'CSV'
-    globalOptions.filePath = await checkAndResolveFilePath('CSV', globalOptions.filePath)
+    globalOptions.filePath = await checkAndResolveFilePath({
+      fileType: 'CSV',
+      argFilePath: globalOptions.filePath,
+    })
 
     const parsedOutputFile = generateParsedCsvFilePath({
       parsedInputFile: parse(globalOptions.filePath),
