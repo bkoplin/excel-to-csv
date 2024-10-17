@@ -1,4 +1,3 @@
-import type { ParsedPath } from 'node:path'
 import type {
   ConditionalPick,
   Primitive,
@@ -9,6 +8,10 @@ import {
   createReadStream,
   ReadStream,
 } from 'node:fs'
+import {
+  basename,
+  type ParsedPath,
+} from 'node:path'
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { Command } from '@commander-js/extra-typings'
@@ -59,6 +62,11 @@ type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
 
 type PromptKeys = StringKeyOf<PromptsType>
 
+const spinner = ora({
+  hideCursor: false,
+  discardStdin: false,
+})
+
 function tryPrompts<Value, TypeName extends PromptKeys>(type: TypeName) {
   return tryit((opts: Parameters<PromptsType[TypeName]>[0]) => Prompts[type]<Value>(opts, { signal: AbortSignal.timeout(5000) }))
 }
@@ -95,7 +103,7 @@ const _excelCommands = program.command('excel')
     if (command.getOptionValue('filePath') !== globalOptions.filePath)
       command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
 
-    const spinner = ora(`Reading ${filename(globalOptions.filePath)}`).start()
+    spinner.start(`Reading ${filename(globalOptions.filePath)}`)
 
     const {
       wb,
@@ -118,7 +126,7 @@ const _excelCommands = program.command('excel')
 
     parsedOutputFile.name = `${parsedOutputFile.name} ${globalOptions.sheet}`
     if (typeof ws === 'undefined') {
-      ora(`The worksheet "${globalOptions.sheet}" does not exist in the Excel file ${filename(globalOptions.filePath)}`).fail()
+      spinner.fail(`The worksheet "${globalOptions.sheet}" does not exist in the Excel file ${filename(globalOptions.filePath)}`)
       process.exit(1)
     }
     if (!isOverlappingRange(ws, globalOptions.range)) {
@@ -162,6 +170,7 @@ const _csvCommands = program.command('csv')
   .addOption(makeFilePathOption('CSV'))
   .addOption(skipLinesOption)
   .addOption(rowCountOption)
+  .addOption(includesHeaderOption)
   .action(async (options, command) => {
     const globalOptions = command.optsWithGlobals<CSVOptionsWithGlobals>()
 
@@ -170,6 +179,18 @@ const _csvCommands = program.command('csv')
       fileType: 'CSV',
       argFilePath: globalOptions.filePath,
     })
+    command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
+    if (isUndefined(globalOptions.rangeIncludesHeader)) {
+      globalOptions.rangeIncludesHeader = await Prompts.confirm({
+        message: `Does ${basename(globalOptions.filePath)} include a header row?`,
+        default: true,
+      })
+      command.setOptionValueWithSource('rangeIncludesHeader', globalOptions.rangeIncludesHeader, 'env')
+    }
+    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true) {
+      globalOptions.header = false
+      command.parent?.setOptionValueWithSource('header', false, 'env')
+    }
 
     const parsedOutputFile = generateParsedCsvFilePath({
       parsedInputFile: parse(globalOptions.filePath),
