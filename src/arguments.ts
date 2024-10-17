@@ -26,8 +26,8 @@ export const sheetRangeOption = new Option('-r, --range [range]', 'the range of 
 .default(undefined)
 
 export const includesHeaderOption = new Option('-i, --range-includes-header [true|false]', 'flag to indicate whether the range include the header row')
-  .argParser(val => val !== 'false' && val !== 'f')
-  .preset('true')
+  .default(true)
+  .preset(true)
 
 export const skipLinesOption = new Option('-l, --skip-lines [number]', 'the number of rows to skip before reading the CSV file')
   .preset(-1 as const)
@@ -55,31 +55,7 @@ export const filterValuesOption = new Option(
   .preset(undefined as unknown as EmptyObject)
   .default(undefined as unknown as EmptyObject)
   .argParser<Record<string, Array<JsonPrimitive>>>((val, filters = {}) => {
-    if (typeof val !== 'undefined' && !isEmpty(val)) {
-      const [key, value] = (val || '').split(':').map(v => v.trim())
-
-      if (key.length) {
-        if (!filters[key])
-          filters[key] = []
-
-        if (value.length) {
-          if (!isNaN(toNumber(value))) {
-            filters[key] = [...filters[key], toNumber(value)]
-          }
-          else if (value === 'true' || value === 'false') {
-            filters[key] = [...filters[key], value === 'true']
-          }
-          else {
-            filters[key] = [...filters[key], value]
-          }
-        }
-        else {
-          filters[key] = [...filters[key], true]
-        }
-      }
-    }
-
-    return filters
+    return processRowFilter(val, filters)
   })
 
 export const categoryOption = new Option(
@@ -101,12 +77,39 @@ export const filterTypeOption = new Option('-t, --match-type [choice]', 'the typ
   .preset<`all` | `any` | `none`>(`all`)
 
 export const writeHeaderOption = new Option(
-  '-h, --header [true|false]',
-  'enable/disable writing the CSV header to each file (if you select this option, the header will be written separately even if there is only one file)',
+  '-h, --header <boolean>',
+  'enable/disable writing the CSV header to each file (if you select this to "true", the header will be written separately even if there is only one file)',
 )
-  .argParser(val => val !== 'false' && val !== 'f')
-  .preset('true')
+  .default(false)
+  .preset(true)
 
+export function processRowFilter(val: string, filters: Record<string, JsonPrimitive[]>): Record<string, JsonPrimitive[]> {
+  if (typeof val !== 'undefined' && !isEmpty(val)) {
+    const [key, value] = (val || '').split(':').map(v => v.trim())
+
+    if (key.length) {
+      if (!filters[key])
+        filters[key] = []
+
+      if (value.length) {
+        if (!isNaN(toNumber(value))) {
+          filters[key] = [...filters[key], toNumber(value)]
+        }
+        else if (value === 'true' || value === 'false') {
+          filters[key] = [...filters[key], value === 'true']
+        }
+        else {
+          filters[key] = [...filters[key], value]
+        }
+      }
+      else {
+        filters[key] = [...filters[key], true]
+      }
+    }
+  }
+
+  return filters
+}
 export function parseRowFilters(filters: string[]): Record<string, JsonPrimitive[]> {
   return filters.reduce((acc: Record<string, Array<JsonPrimitive>> = {}, filter): Record<string, Array<JsonPrimitive>> => {
     if (typeof filter !== 'undefined' && !isEmpty(filter)) {

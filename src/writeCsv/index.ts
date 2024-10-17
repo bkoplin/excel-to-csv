@@ -161,14 +161,14 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
             const stream = createWriteStream(outputFilePath, 'utf-8')
 
-            stream.on('close', () => {
-              // parser.pause()
+            // stream.on('finish', () => {
+            //   parser.pause()
 
-              const totalRows = sumBy(files, 'ROWS')
+            //   const totalRows = sumBy(files, 'ROWS')
 
-              spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
-              // delay(() => parser.resume(), 500)
-            })
+            //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+            //   delay(() => parser.resume(), 500)
+            // })
             if (stream.write(`${csvOutput}\n`)) {
               parser.pause()
               stream.once('drain', () => {
@@ -212,6 +212,14 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
             const stream = createWriteStream(outputFilePath, 'utf-8')
 
+            // stream.on('finish', () => {
+            //   parser.pause()
+
+            //   const totalRows = sumBy(files, 'ROWS')
+
+            //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+            //   delay(() => parser.resume(), 500)
+            // })
             if (stream.write(`${csvOutput}\n`)) {
               parser.pause()
               stream.once('drain', () => {
@@ -245,7 +253,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
               })
             }
           }
-          if ((parsedLines % 1000) === 0) {
+          if ((parsedLines % 1000) === 0 && parsedLines > 0) {
             const totalRows = sumBy(files, 'ROWS')
 
             spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`WRITING "${parse(activeFileObject.PATH).base};"`)
@@ -287,6 +295,8 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       const totalRows = sumBy(files, 'ROWS')
 
       const totalBytes = sumBy(files, 'BYTES')
+
+      // spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `)
 
       const totalFiles = files.length
 

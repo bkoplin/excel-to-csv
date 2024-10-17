@@ -1,7 +1,9 @@
 import type { ParsedPath } from 'node:path'
 import type {
+  ConditionalPick,
   Primitive,
   Simplify,
+  StringKeyOf,
 } from 'type-fest'
 import {
   createReadStream,
@@ -10,6 +12,8 @@ import {
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { Command } from '@commander-js/extra-typings'
+import * as Prompts from '@inquirer/prompts'
+import chalk from 'chalk'
 import fs from 'fs-extra'
 import { isUndefined } from 'lodash-es'
 import ora from 'ora'
@@ -19,6 +23,7 @@ import {
   parse,
 } from 'pathe'
 import { filename } from 'pathe/utils'
+import { tryit } from 'radash'
 import yaml from 'yaml'
 import pkg from '../package.json'
 import {
@@ -49,6 +54,14 @@ import {
   generateParsedCsvFilePath,
 } from './helpers'
 import writeCsv from './writeCsv'
+
+type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
+
+type PromptKeys = StringKeyOf<PromptsType>
+
+function tryPrompts<Value, TypeName extends PromptKeys>(type: TypeName) {
+  return tryit((opts: Parameters<PromptsType[TypeName]>[0]) => Prompts[type]<Value>(opts, { signal: AbortSignal.timeout(5000) }))
+}
 
 const program = new Command(pkg.name).version(pkg.version)
 .description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
@@ -82,11 +95,14 @@ const _excelCommands = program.command('excel')
     if (command.getOptionValue('filePath') !== globalOptions.filePath)
       command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
 
+    const spinner = ora(`Reading ${filename(globalOptions.filePath)}`).start()
+
     const {
       wb,
       bytesRead,
     } = await getWorkbook(globalOptions.filePath)
 
+    spinner.succeed(chalk.greenBright(`Read ${filename(globalOptions.filePath)}`))
     if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
       globalOptions.sheet = await setSheetName(wb)
       command.setOptionValueWithSource('sheet', globalOptions.sheet, 'env')
@@ -118,6 +134,7 @@ const _excelCommands = program.command('excel')
       globalOptions.header = false
       command.parent?.setOptionValueWithSource('header', false, 'env')
     }
+    // await updateCommandOptions(command, globalOptions)
 
     const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
 
@@ -227,3 +244,53 @@ export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOpti
 export type CombinedProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
 
 program.parse(process.argv)
+async function updateCommandOptions(command, globalOptions) {
+  for (const commandOption of command.options) {
+    const attributeName = commandOption.attributeName() as keyof typeof globalOptions
+
+    const val = command.getOptionValue(attributeName)
+
+    const source = command.getOptionValueSource(attributeName)
+
+    if (typeof source !== 'undefined' && source !== 'env') {
+      const optionMessage = `Should ${chalk.yellowBright(commandOption.long)} be set to ${chalk.cyanBright(val)}?\n(${commandOption.description})`
+
+      const [, setValueAnswer] = await tryPrompts('confirm')({
+        message: optionMessage,
+        default: true,
+      })
+
+      if (setValueAnswer === false) {
+        if (commandOption.argChoices) {
+          const [, optionValue] = await tryPrompts('select')({
+            message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
+            choices: commandOption.argChoices,
+            default: val,
+          })
+
+          // globalOptions[attributeName] = optionValue
+        }
+        else if (typeof val === 'boolean') {
+          const [, optionValue] = await tryPrompts('select')({
+            message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
+            default: val,
+            choices: [{
+              name: 'true',
+              value: true,
+            }, {
+              name: 'false',
+              value: false,
+            }],
+          })
+
+          // globalOptions[attributeName] = optionValue
+        }
+        else {
+          const [, optionValue] = await tryPrompts('input')({ message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})` })
+
+          // globalOptions[attributeName] = optionValue
+        }
+      }
+    }
+  }
+}
