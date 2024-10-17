@@ -18,6 +18,7 @@ import {
   delay,
   findIndex,
   findLast,
+  isBoolean,
   isEmpty,
   isNil,
   isNull,
@@ -51,7 +52,6 @@ import {
 } from 'radash'
 import Table from 'table-layout'
 import yaml from 'yaml'
-import './table-layout.d'
 
 export default async function<Options extends ExcelOptionsWithGlobals | CSVOptionsWithGlobals>(inputFile: Readable, options: Options): Promise<void> {
   const {
@@ -80,8 +80,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
   const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
 
-  const headerFile = createWriteStream(headerFilePath, 'utf-8')
-
   let skippedLines = 'skippedLines' in options ? options.skippedLines : 0
 
   const bytesRead = options.bytesRead
@@ -94,7 +92,9 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
         parser.abort()
       }
 
-      else if (headerFile.writable && !fields.length && options.header === true && Array.isArray(results.data)) {
+      else if (!fields.length && (options.command === 'CSV' || (options.command === 'Excel' && options.rangeIncludesHeader)) && Array.isArray(results.data)) {
+        const headerFile = createWriteStream(headerFilePath, 'utf-8')
+
         fields = formatHeaderValues({ data: results.data })
         headerFile.end(Papa.unparse([fields]))
       }
@@ -128,7 +128,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
         let category: string | undefined
 
         if (filterTest) {
-          if (!(isEmpty(categoryField) || isUndefined(categoryField) || isNull(categoryField))) {
+          if (!isEmpty(categoryField) && !isUndefined(categoryField) && !isNull(categoryField) && !isBoolean(categoryField)) {
             const rawCategory = !Array.isArray(thisRow) ? categoryField in thisRow ? thisRow[categoryField as string] : undefined : undefined
 
             if (isUndefined(rawCategory))
@@ -162,14 +162,19 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
             const stream = createWriteStream(outputFilePath, 'utf-8')
 
             stream.on('close', () => {
-              parser.pause()
+              // parser.pause()
 
               const totalRows = sumBy(files, 'ROWS')
 
               spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
-              delay(() => parser.resume(), 500)
+              // delay(() => parser.resume(), 500)
             })
-            stream.write(`${csvOutput}\n`)
+            if (stream.write(`${csvOutput}\n`)) {
+              parser.pause()
+              stream.once('drain', () => {
+                parser.resume()
+              })
+            }
             activeFileObject = {
               BYTES: csvRowLength,
               FILENUM: (maxFileSizeInMb ? 1 : undefined),
@@ -185,9 +190,9 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
             spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
             files.push(activeFileObject)
-            delay(() => parser.resume(), 500)
+            await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
           }
-          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
+          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && isNumber(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
             if (activeFileObject.stream?.writableNeedDrain) {
               activeFileObject.stream.once('drain', () => {
                 activeFileObject!.stream!.close()
@@ -207,7 +212,12 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
             const stream = createWriteStream(outputFilePath, 'utf-8')
 
-            stream.write(`${csvOutput}\n`)
+            if (stream.write(`${csvOutput}\n`)) {
+              parser.pause()
+              stream.once('drain', () => {
+                parser.resume()
+              })
+            }
 
             const newActiveFileObject = {
               BYTES: csvRowLength,
@@ -245,17 +255,20 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
     },
     complete: async () => {
       for (const file of files) {
-        if (file.stream?.writableEnded !== true) {
+        const stream = file.stream
+
+        if (typeof stream !== 'undefined') {
           await new Promise((resolve) => {
-            if (file.stream?.writableNeedDrain) {
-              file.stream.once('drain', () => {
-                file.stream!.close()
-                resolve(true)
+            stream.once('finish', () => {
+              resolve(true)
+            })
+            if (stream.writableNeedDrain === true) {
+              stream.once('drain', () => {
+                stream.end()
               })
             }
             else {
-              file.stream?.close()
-              resolve(true)
+              stream.end()
             }
           })
         }
