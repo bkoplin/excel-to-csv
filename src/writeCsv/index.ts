@@ -11,7 +11,6 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { objectEntries } from '@antfu/utils'
-import { select } from '@inquirer/prompts'
 import chalk from 'chalk'
 import filenamify from 'filenamify'
 import fs from 'fs-extra'
@@ -55,7 +54,7 @@ import Table from 'table-layout'
 import yaml from 'yaml'
 
 export default async function<Options extends ExcelOptionsWithGlobals | CSVOptionsWithGlobals>(inputFile: Readable, options: Options): Promise<void> {
-  let {
+  const {
     filePath: inputFilePath,
     categoryField = '',
     fileSize: maxFileSizeInMb,
@@ -87,7 +86,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
   let parsedLines = 0
 
-  let tryCategory = typeof categoryField === 'string' && categoryField.length === 0
+  const tryCategory = typeof categoryField === 'string' && categoryField.length === 0
 
   Papa.parse<JsonPrimitive[] >(inputFile, {
     async step(results, parser) {
@@ -107,20 +106,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       else if (results.errors.length) {
         skippedLines++
       }
-      else if (tryCategory && fields.length) {
-        parser.pause()
 
-        const selectedCategory = await select<string>({
-          message: 'Would you like to select a category field (to split into multiple files)?',
-          choices: fields,
-        }, { clearPromptOnDone: true })
-
-        if (selectedCategory) {
-          categoryField = selectedCategory
-        }
-        tryCategory = false
-        parser.resume()
-      }
       else {
         const thisRow = Array.isArray(results.data) ? fields.length ? zipToObject(fields, results.data) : results.data : results.data
 

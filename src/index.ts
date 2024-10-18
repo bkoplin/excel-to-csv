@@ -148,6 +148,31 @@ const _excelCommands = program.command('excel')
 
     const data: (Primitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
 
+    if (globalOptions.rangeIncludesHeader === true && !globalOptions.categoryField) {
+      try {
+        const confirmCategory = await Prompts.confirm({
+          message: 'Would you like to select a field to split the file into separate files?',
+          default: false,
+        }, { signal: AbortSignal.timeout(5000) })
+
+        if (confirmCategory === true) {
+          const selectedCategory = await Prompts.select<string>({
+            message: 'Select a column to group by…',
+            choices: [...data[0], new Prompts.Separator()],
+            loop: true,
+            pageSize: data[0].length > 15 ? 15 : data[0].length,
+          })
+
+          if (selectedCategory) {
+            globalOptions.categoryField = selectedCategory
+            command.setOptionValueWithSource('categoryField', selectedCategory, 'env')
+          }
+        }
+      }
+      catch (_e) {
+      }
+    }
+
     const csv = Papa.unparse(data, { delimiter: '|' })
 
     const commandLineString = generateCommandLineString(globalOptions, command)
