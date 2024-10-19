@@ -1,6 +1,5 @@
 import type {
   ConditionalPick,
-  Primitive,
   Simplify,
   StringKeyOf,
 } from 'type-fest'
@@ -14,12 +13,13 @@ import {
 } from 'node:path'
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
+import timers from 'node:timers/promises'
 import { Command } from '@commander-js/extra-typings'
 import * as Prompts from '@inquirer/prompts'
 import chalk from 'chalk'
 import fs from 'fs-extra'
 import { isUndefined } from 'lodash-es'
-import ora from 'ora'
+import ora, { oraPromise } from 'ora'
 import Papa from 'papaparse'
 import {
   join,
@@ -67,8 +67,8 @@ const spinner = ora({
   discardStdin: false,
 })
 
-function tryPrompts<Value, TypeName extends PromptKeys>(type: TypeName) {
-  return tryit((opts: Parameters<PromptsType[TypeName]>[0]) => Prompts[type]<Value>(opts, { signal: AbortSignal.timeout(5000) }))
+async function tryPrompt<Value>(type: PromptKeys, timeout = 5000) {
+  return tryit(opts => Prompts[type]<Value>(opts, { signal: AbortSignal.timeout(timeout) }))
 }
 
 const program = new Command(pkg.name).version(pkg.version)
@@ -103,14 +103,30 @@ const _excelCommands = program.command('excel')
     if (command.getOptionValue('filePath') !== globalOptions.filePath)
       command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
 
-    spinner.start(`Reading ${filename(globalOptions.filePath)}`)
+    // ora({
+    //   hideCursor: false,
+    //   discardStdin: false,
+    //   text: `Reading ${filename(globalOptions.filePath)}`,
+    // }).start()
 
     const {
       wb,
       bytesRead,
-    } = await getWorkbook(globalOptions.filePath)
+    } = await oraPromise(async (_spinner) => {
+      // spinner.text = `Reading ${filename(globalOptions.filePath)}`
 
-    spinner.succeed(chalk.greenBright(`Read ${filename(globalOptions.filePath)}`))
+      const d = await getWorkbook(globalOptions.filePath)
+
+      await timers.setTimeout(1000)
+
+      return d
+    }, {
+      text: `Reading ${basename(globalOptions.filePath)}`,
+      successText: chalk.greenBright(`Successfully read ${basename(globalOptions.filePath)}`),
+      failText: chalk.redBright(`failure reading ${basename(globalOptions.filePath)}`),
+
+    })
+
     if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
       globalOptions.sheet = await setSheetName(wb)
       command.setOptionValueWithSource('sheet', globalOptions.sheet, 'env')
@@ -130,8 +146,10 @@ const _excelCommands = program.command('excel')
       process.exit(1)
     }
     if (!isOverlappingRange(ws, globalOptions.range)) {
-      globalOptions.range = await setRange(wb, globalOptions.sheet)
-      command.setOptionValueWithSource('range', globalOptions.range, 'env')
+      const selectedRange = await setRange(wb, globalOptions.sheet)
+
+      command.setOptionValueWithSource('range', selectedRange, 'env')
+      globalOptions.range = selectedRange
       isOverlappingRange(ws, globalOptions.range)
     }
     if (isUndefined(globalOptions.rangeIncludesHeader)) {
@@ -146,34 +164,26 @@ const _excelCommands = program.command('excel')
 
     const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
 
-    const data: (Primitive | Date)[][] = extractDataFromWorksheet(parsedRange, ws)
+    const [fields, ...data] = extractDataFromWorksheet(parsedRange, ws)
 
-    if (globalOptions.rangeIncludesHeader === true && !globalOptions.categoryField) {
-      try {
-        const confirmCategory = await Prompts.confirm({
-          message: 'Would you like to select a field to split the file into separate files?',
-          default: false,
-        }, { signal: AbortSignal.timeout(5000) })
+    const groupingOptions = [...fields as string[], new Prompts.Separator()]
 
-        if (confirmCategory === true) {
-          const selectedCategory = await Prompts.select<string>({
-            message: 'Select a column to group by…',
-            choices: [...data[0], new Prompts.Separator()],
-            loop: true,
-            pageSize: data[0].length > 15 ? 15 : data[0].length,
-          })
+    const hasNullUndefinedField = fields.some(f => typeof f === 'undefined' || f === null)
 
-          if (selectedCategory) {
-            globalOptions.categoryField = selectedCategory
-            command.setOptionValueWithSource('categoryField', selectedCategory, 'env')
-          }
-        }
-      }
-      catch (_e) {
-      }
+    if (globalOptions.rangeIncludesHeader === true && !globalOptions.categoryField && !hasNullUndefinedField) {
+      await selectGroupingField(groupingOptions, command)
+      globalOptions.categoryField = command.parent!.getOptionValue('categoryField') as string
+    }
+    else if (hasNullUndefinedField) {
+      spinner.warn(chalk.yellowBright(`The selected range does not seem to include a header row; you will need to restart if you want to group or filter columns`))
+      command.parent!.setOptionValueWithSource('categoryField', undefined, 'env')
+      command.parent!.setOptionValueWithSource('header', undefined, 'env')
+      command.parent!.setOptionValueWithSource('rangeIncludesHeader', undefined, 'env')
+      command.setOptionValueWithSource('rowFilters', undefined, 'env')
+      await timers.setTimeout(2500)
     }
 
-    const csv = Papa.unparse(data, { delimiter: '|' })
+    const csv = Papa.unparse([fields, ...data], { delimiter: '|' })
 
     const commandLineString = generateCommandLineString(globalOptions, command)
 
@@ -290,6 +300,26 @@ export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOpti
 export type CombinedProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
 
 program.parse(process.argv)
+async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[], command: Command): Promise<void> {
+  const [confirmErr, confirmCategory] = await tryit(Prompts.confirm)({
+    message: 'Would you like to select a field to split the file into separate files?',
+    default: false,
+  }, { signal: AbortSignal.timeout(7500) })
+
+  if (confirmCategory === true) {
+    const [categoryErr, selectedCategory] = await tryit(Prompts.select<string>)({
+      message: `Select a column to group rows from input file by...`,
+      choices: groupingOptions,
+      loop: true,
+      // pageSize: groupingOptions.length > 15 ? 15 : groupingOptions.length,
+    })
+
+    if (selectedCategory) {
+      // globalOptions.categoryField = selectedCategory
+      command.parent!.setOptionValueWithSource('categoryField', selectedCategory, 'env')
+    }
+  }
+}
 async function updateCommandOptions(command, globalOptions) {
   for (const commandOption of command.options) {
     const attributeName = commandOption.attributeName() as keyof typeof globalOptions
@@ -301,14 +331,14 @@ async function updateCommandOptions(command, globalOptions) {
     if (typeof source !== 'undefined' && source !== 'env') {
       const optionMessage = `Should ${chalk.yellowBright(commandOption.long)} be set to ${chalk.cyanBright(val)}?\n(${commandOption.description})`
 
-      const [, setValueAnswer] = await tryPrompts('confirm')({
+      const [, setValueAnswer] = await tryPrompt('confirm')({
         message: optionMessage,
         default: true,
       })
 
       if (setValueAnswer === false) {
         if (commandOption.argChoices) {
-          const [, optionValue] = await tryPrompts('select')({
+          const [, optionValue] = await tryPrompt('select')({
             message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
             choices: commandOption.argChoices,
             default: val,
@@ -317,7 +347,7 @@ async function updateCommandOptions(command, globalOptions) {
           // globalOptions[attributeName] = optionValue
         }
         else if (typeof val === 'boolean') {
-          const [, optionValue] = await tryPrompts('select')({
+          const [, optionValue] = await tryPrompt('select')({
             message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
             default: val,
             choices: [{
@@ -332,7 +362,7 @@ async function updateCommandOptions(command, globalOptions) {
           // globalOptions[attributeName] = optionValue
         }
         else {
-          const [, optionValue] = await tryPrompts('input')({ message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})` })
+          const [, optionValue] = await tryPrompt('input')({ message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})` })
 
           // globalOptions[attributeName] = optionValue
         }

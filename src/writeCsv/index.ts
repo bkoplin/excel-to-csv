@@ -61,6 +61,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
     matchType,
     rowFilters: filters = {},
     parsedOutputFile,
+    intputFields = [],
   } = options
 
   const writeHeaderOnEachFile = options.header

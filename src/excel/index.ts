@@ -1,4 +1,4 @@
-import type { Primitive } from 'type-fest'
+import type { JsonPrimitive } from 'type-fest'
 import { readFile } from 'node:fs/promises'
 import {
   confirm,
@@ -10,6 +10,7 @@ import {
 import chalk from 'chalk'
 import {
   isNil,
+  isNull,
   isUndefined,
   range,
 } from 'lodash-es'
@@ -93,8 +94,21 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
   const {
     worksheetRange,
     isRangeInDefaultRange,
+    // isColumnInRange,
     parsedRange,
-  } = extractRangeInfo(wb.Sheets[sheetName], _inputRange)
+    rangeWithoutNulls,
+    firstRowWithoutNulls,
+  } = extractRangeInfo(wb.Sheets[sheetName], _inputRange ?? wb.Sheets[sheetName]['!ref']!)
+
+  // let firstRowWithoutNulls = parsedRange.s.r
+
+  // while (firstRowWithoutNulls <= parsedRange.e.r && !wb.Sheets[sheetName]?.['!data']?.[firstRowWithoutNulls].some((cell, i) => isColumnInRange(i) && isNil(cell?.v))) {
+  //   firstRowWithoutNulls++
+  // }
+
+  // if (firstRowWithoutNulls > parsedRange.e.r)
+  //   firstRowWithoutNulls = parsedRange.s.r
+  // // findIndex(wb.Sheets[sheetName]?.['!data'], (row, i) => row.some(cell => !isNil(cell?.v)))
 
   const rangeType = await expand({
     message: 'How do you want to specify the range of the worksheet to parse?',
@@ -117,7 +131,7 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
   if (rangeType === 'Excel Format') {
     return input({
       message: 'Enter the range of the worksheet to parse',
-      default: _inputRange ?? worksheetRange,
+      default: rangeWithoutNulls,
       validate: (value: string) => {
         const isValidInput = isRangeInDefaultRange(XLSX.utils.decode_range(value))
 
@@ -131,7 +145,7 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
   else {
     const startRow = await number({
       message: 'Enter the starting row number',
-      default: parsedRange.s.r + 1,
+      default: firstRowWithoutNulls + 1,
       min: parsedRange.s.r + 1,
       max: parsedRange.e.r + 1,
       step: 1,
@@ -183,29 +197,52 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
     return `${startCol}${startRow}:${endCol}${endRow}`
   }
 }
-export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string | undefined): {
+export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string): {
   worksheetRange: string
   isRangeInDefaultRange: (r: XLSX.Range) => boolean
   parsedRange: XLSX.Range
   isRowInRange: (input: number) => boolean
   isColumnInRange: (input: number) => boolean
+  firstRowWithoutNulls: number
+  rangeWithoutNulls: string
 } {
   const worksheetRange = ws['!ref']!
 
-  const parsedRange = XLSX.utils.decode_range(_inputRange ?? worksheetRange)
+  const parsedRange = XLSX.utils.decode_range(_inputRange)
 
-  const isRowInRange = (input: number): boolean => inRange(input, parsedRange.s.r, parsedRange.e.r + 1)
+  const parsedWorksheetRange = XLSX.utils.decode_range(worksheetRange)
 
-  const isColumnInRange = (input: number): boolean => inRange(input, parsedRange.s.c, parsedRange.e.c + 1)
+  const isRowInRange = (input: number): boolean => inRange(input, parsedWorksheetRange.s.r, parsedWorksheetRange.e.r + 1)
+
+  const isColumnInRange = (input: number): boolean => inRange(input, parsedWorksheetRange.s.c, parsedWorksheetRange.e.c + 1)
 
   const isRangeInDefaultRange = (r: XLSX.Range): boolean => isRowInRange(r.s.r) && isColumnInRange(r.s.c) && isRowInRange(r.e.r) && isColumnInRange(r.e.c)
 
+  const hasAllColumns = (input: any[] | undefined): boolean => typeof input === 'undefined' || (parsedWorksheetRange.e.c - parsedWorksheetRange.s.c + 1) === input.length
+
+  let firstRowWithoutNulls = parsedWorksheetRange.s.r
+
+  while (firstRowWithoutNulls <= parsedWorksheetRange.e.r && (!hasAllColumns(ws?.['!data']?.[firstRowWithoutNulls]) || !ws?.['!data']?.[firstRowWithoutNulls].every(cell => !isNull(cell?.v)))) {
+    firstRowWithoutNulls++
+  }
+
+  if (firstRowWithoutNulls > parsedWorksheetRange.e.r)
+    firstRowWithoutNulls = parsedWorksheetRange.s.r
+
   return {
     worksheetRange,
+    firstRowWithoutNulls,
     isRangeInDefaultRange,
     parsedRange,
     isRowInRange,
     isColumnInRange,
+    rangeWithoutNulls: XLSX.utils.encode_range({
+      s: {
+        r: firstRowWithoutNulls,
+        c: parsedRange.s.c,
+      },
+      e: parsedRange.e,
+    }),
   }
 }
 export async function setSheetName(wb: XLSX.WorkBook, sheetName?: string): Promise<string> {
@@ -225,21 +262,21 @@ export async function setRangeIncludesHeader(_inputRange: string, defaultAnswer?
     default: defaultAnswer,
   })
 }
-export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): (Primitive | Date)[][] {
-  const data: (Primitive | Date)[][] = []
+export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): Array<(JsonPrimitive | Date)[]> {
+  const data = []
 
   const rowIndices = range(parsedRange.s.r, parsedRange.e.r + 1)
 
   const colIndices = range(parsedRange.s.c, parsedRange.e.c + 1)
 
   for (const rowIndex of rowIndices) {
-    const row: (Primitive | Date)[] = []
+    const row: Array<JsonPrimitive | Date> = []
 
     for (const colIndex of colIndices) {
       const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
 
-      if (isUndefined(cell)) {
-        row.push('')
+      if (isUndefined(cell) || isUndefined(cell.v)) {
+        row.push(null)
       }
       else {
         const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : cell.v
