@@ -1,0 +1,6 @@
+{
+  "filter[HCPCS_CD][value]": "812",
+  "filter[HCPCS_CD][operator]": "STARTS_WITH",
+  "filter[TYPE_OF_SERVICE_CD][value]": "5",
+  "filter[PLACE_OF_SERVICE_CD][value]": "81"
+}
