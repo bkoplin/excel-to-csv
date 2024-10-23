@@ -11,7 +11,7 @@ import {
 } from 'lodash-es'
 
 export default new Option(
-  '-f, --row-filters [operators...]',
+  '--row-filters [operators...]',
   `a header/value pair to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}. \nTo apply multiple filters, input the option multiple times, e.g., \n${`${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 1]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 2]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 2]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 3]')}`}`,
 )
   .implies({ matchType: `all` })

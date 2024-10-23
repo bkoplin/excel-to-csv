@@ -65,34 +65,36 @@ export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined
       return false
     }
     else {
-      const warningStrings = []
-
-      for (const termType of [['s', 'starts'], ['e', 'ends']] as const) {
-        for (const objType of [['r', 'row', 'encode_row'], ['c', 'column', 'encode_col']] as const) {
-          const inputVal = decodedInputRange[termType[0]][objType[0]]
-
-          const sheetVal = decodedSheetRange[termType[0]][objType[0]]
-
-          const encodedInputVal = XLSX.utils[objType[2]](inputVal)
-
-          const diffType = inputVal < sheetVal ? 'before' : 'after'
-
-          if (inputVal !== sheetVal) {
-            warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.magentaBright(encodedInputVal)}, which is ${chalk.magentaBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
-          }
-        }
-      }
-
-      if (warningStrings.length)
-        ora(chalk.bold.yellowBright(`You have input a range (${chalk.magentaBright(range)}) that includes less data than the worksheet data range (${`${chalk.magentaBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
+      compareAndLogRanges(decodedInputRange, decodedSheetRange, range, sheetRange)
 
       return true
     }
   }
 }
+export function compareAndLogRanges(decodedInputRange: XLSX.Range, decodedSheetRange: XLSX.Range, range: string, sheetRange: string) {
+  const warningStrings = []
+
+  for (const termType of [['s', 'starts'], ['e', 'ends']] as const) {
+    for (const objType of [['r', 'row', 'encode_row'], ['c', 'column', 'encode_col']] as const) {
+      const inputVal = decodedInputRange[termType[0]][objType[0]]
+
+      const sheetVal = decodedSheetRange[termType[0]][objType[0]]
+
+      const encodedInputVal = XLSX.utils[objType[2]](inputVal)
+
+      const diffType = inputVal < sheetVal ? 'before' : 'after'
+
+      if (inputVal !== sheetVal) {
+        warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.magentaBright(encodedInputVal)}, which is ${chalk.magentaBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
+      }
+    }
+  }
+
+  if (warningStrings.length)
+    ora(chalk.bold.yellowBright(`You have input a range (${chalk.magentaBright(range)}) that includes less data than the worksheet data range (${`${chalk.magentaBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
+}
 export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange?: string): Promise<string> {
   const {
-    worksheetRange,
     isRangeInDefaultRange,
     // isColumnInRange,
     parsedRange,
@@ -197,15 +199,7 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
     return `${startCol}${startRow}:${endCol}${endRow}`
   }
 }
-export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string): {
-  worksheetRange: string
-  isRangeInDefaultRange: (r: XLSX.Range) => boolean
-  parsedRange: XLSX.Range
-  isRowInRange: (input: number) => boolean
-  isColumnInRange: (input: number) => boolean
-  firstRowWithoutNulls: number
-  rangeWithoutNulls: string
-} {
+export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string) {
   const worksheetRange = ws['!ref']!
 
   const parsedRange = XLSX.utils.decode_range(_inputRange)
@@ -236,6 +230,7 @@ export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string): {
     parsedRange,
     isRowInRange,
     isColumnInRange,
+    parsedWorksheetRange,
     rangeWithoutNulls: XLSX.utils.encode_range({
       s: {
         r: firstRowWithoutNulls,

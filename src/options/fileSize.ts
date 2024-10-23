@@ -1,12 +1,10 @@
 import { Option } from '@commander-js/extra-typings'
-import {
-  isNaN,
-  toNumber,
-} from 'lodash-es'
+import { toFloat } from 'radash'
 
 export default new Option(
-  '-s, --file-size [number]',
+  '--file-size [number]',
   'the maximum size of each file in MB (if not set, the files will not be split by size)',
 )
-  .preset<undefined | string>(undefined)
-  .argParser((val): number | undefined => typeof val === 'undefined' || val === null || isNaN(toNumber(val)) ? undefined : toNumber(val))
+  .argParser<number | undefined>((val): number | undefined => toFloat(val, undefined))
+  .preset<undefined>(undefined)
+  .default<undefined>(undefined)

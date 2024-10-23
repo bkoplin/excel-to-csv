@@ -1,10 +1,16 @@
+import type { ParsedPath } from 'node:path'
 import type { Readable } from 'node:stream'
-import type { JsonPrimitive } from 'type-fest'
+import type { Ora } from 'ora'
+import type {
+  JsonObject,
+  JsonPrimitive,
+} from 'type-fest'
 import type {
   CSVOptionsWithGlobals,
   ExcelOptionsWithGlobals,
-} from '../index'
-import type { FileMetrics } from './types'
+  FileMetrics,
+
+} from '../types'
 import { createWriteStream } from 'node:fs'
 import {
   readFile,
@@ -12,28 +18,22 @@ import {
 } from 'node:fs/promises'
 import { objectEntries } from '@antfu/utils'
 import chalk from 'chalk'
-import filenamify from 'filenamify'
 import fs from 'fs-extra'
 import {
-  delay,
-  findIndex,
-  findLast,
-  isBoolean,
+  findLastIndex,
+  get,
   isEmpty,
-  isNil,
   isNull,
   isNumber,
   isObjectLike,
   isString,
   isUndefined,
-  last,
   maxBy,
   padStart,
   sumBy,
   toInteger,
 } from 'lodash-es'
 import numbro from 'numbro'
-import ora from 'ora'
 import Papa from 'papaparse'
 import {
   format,
@@ -52,221 +52,159 @@ import {
 } from 'radash'
 import Table from 'table-layout'
 import yaml from 'yaml'
+import {
+  createCsvFileName,
+  createHeaderFile,
+  formatHeaderValues,
+  writeToActiveStream,
+} from '../helpers'
 
-export default async function<Options extends ExcelOptionsWithGlobals | CSVOptionsWithGlobals>(inputFile: Readable, options: Options): Promise<void> {
-  const {
-    filePath: inputFilePath,
-    categoryField = '',
-    fileSize: maxFileSizeInMb,
-    matchType,
-    rowFilters: filters = {},
-    parsedOutputFile,
-    intputFields = [],
-  } = options
+export default async function<Options extends ExcelOptionsWithGlobals | CSVOptionsWithGlobals>(inputFile: Readable, commandOptions: Options, options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  skippedLines: number | undefined
+  bytesRead: number | undefined
+  spinner: Ora
+  files: FileMetrics[]
+  fields: string[]
+  parsedLines: number
+}): Promise<void> {
+  // let spinner: Ora
 
-  const writeHeaderOnEachFile = options.header
+  // let files: Array<FileMetrics>
 
-  const spinner = ora({
-    hideCursor: false,
-    discardStdin: false,
-  })
+  // let fields: string[]
 
-  const files: Array<FileMetrics> = []
+  // const skippedLines = 'skippedLines' in options ? options.skippedLines : 0
 
-  const parsedInputFile = parse(inputFilePath)
+  // const bytesRead = options.bytesRead
 
-  spinner.start(`Parsing ${chalk.cyan(filename(inputFilePath))}`)
+  // let parsedLines: number
 
-  let fields: string[] = []
+  Papa.parse<JsonPrimitive[] | JsonObject >(inputFile, {
+    async step(results, _parser) {
+      // if (get(options, 'rowCount') === parsedLines) {
+      //   parser.abort()
+      // }
 
-  const headerFilePath = join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)
-
-  let skippedLines = 'skippedLines' in options ? options.skippedLines : 0
-
-  const bytesRead = options.bytesRead
-
-  let parsedLines = 0
-
-  const tryCategory = typeof categoryField === 'string' && categoryField.length === 0
-
-  Papa.parse<JsonPrimitive[] >(inputFile, {
-    async step(results, parser) {
-      if ('rowCount' in options && options.rowCount === parsedLines) {
-        parser.abort()
+      // else
+      if (!(options.fields ?? []).length && commandOptions.rangeIncludesHeader === true && Array.isArray(results.data)) {
+        createHeaderFile(options, results)
       }
-
-      else if (!fields.length && options.rangeIncludesHeader === true && Array.isArray(results.data)) {
-        const headerFile = createWriteStream(headerFilePath, 'utf-8')
-
-        fields = formatHeaderValues({ data: results.data })
-        headerFile.end(Papa.unparse([fields]))
+      else if ((Array.isArray(results.data) && options.fields.length && results.data.length !== options.fields.length) || results.errors.length) {
+        options.skippedLines = (options.skippedLines ?? 0) + 1
       }
-      else if (Array.isArray(results.data) && fields.length && results.data.length !== fields.length) {
-        skippedLines++
-      }
-      else if (results.errors.length) {
-        skippedLines++
-      }
-
       else {
-        const thisRow = Array.isArray(results.data) ? fields.length ? zipToObject(fields, results.data) : results.data : results.data
+        options.parsedLines = (options.parsedLines ?? 0) + 1
 
-        parsedLines++
+        const {
+          isUnfiltered,
+          thisRow,
+        } = filterData(results, options, commandOptions)
 
-        const filtersArray = objectEntries(filters) as Array<[string, JsonPrimitive[]]>
-
-        let filterTest = isEmpty(filters) || Array.isArray(thisRow)
-
-        if (!filterTest && !Array.isArray(thisRow)) {
-          if (matchType === 'none') {
-            filterTest = filtersArray.every(([field, value]) => !value.includes(thisRow[field]))
-          }
-          else if (matchType === 'any') {
-            filterTest = filtersArray.some(([field, value]) => value.includes(thisRow[field]))
-          }
-          else {
-            filterTest = filtersArray.every(([field, value]) => value.includes(thisRow[field]))
-          }
-        }
-
-        let category: string | undefined
-
-        if (filterTest) {
-          if (!isEmpty(categoryField) && !isUndefined(categoryField) && !isNull(categoryField) && !isBoolean(categoryField)) {
-            const rawCategory = !Array.isArray(thisRow) ? categoryField in thisRow ? thisRow[categoryField as string] : undefined : undefined
+        if (isUnfiltered) {
+          if (isString(commandOptions.categoryField) && !Array.isArray(thisRow)) {
+            const rawCategory = get(thisRow, commandOptions.categoryField, undefined)
 
             if (isUndefined(rawCategory))
-              category = undefined
-            else if (isString(rawCategory))
-              category = isEmpty(rawCategory) ? 'EMPTY' : rawCategory
+              options.category = undefined
+            else if (typeof rawCategory === 'string')
+              options.category = isEmpty(rawCategory) ? 'EMPTY' : rawCategory
             else if (isNull(rawCategory))
-              category = 'NULL'
+              options.category = 'NULL'
             else if (isNumber(rawCategory))
-              category = toInteger(rawCategory).toString()
-            else category = `${rawCategory}`
+              options.category = toInteger(rawCategory).toString()
+            else options.category = `${rawCategory}`
           }
-
-          let activeFileObject = (isNil(category) ? last(files) : findLast(files, a => a.CATEGORY === category))
 
           const csvOutput = Papa.unparse([results.data])
 
-          const csvRowLength = Buffer.from(csvOutput).length
-
-          if (isUndefined(activeFileObject)) {
-            const defaultFileNumber = (maxFileSizeInMb ? 1 : undefined)
+          if (options.files.length === 0) {
+            const FILENUM = (commandOptions.fileSize ? 1 : undefined)
 
             const outputFilePath = format({
-              ...parsedOutputFile,
-              name: generateCsvFileName({
-                fileNumber: defaultFileNumber,
-                category,
-              }),
+              ...options.parsedOutputFile,
+              name: createCsvFileName(options, FILENUM),
             })
 
             const stream = createWriteStream(outputFilePath, 'utf-8')
 
             // stream.on('finish', () => {
             //   parser.pause()
-
-            //   const totalRows = sumBy(files, 'ROWS')
-
+            //   const totalRows = sumBy(options.files, 'ROWS')
             //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
             //   delay(() => parser.resume(), 500)
             // })
-            if (stream.write(`${csvOutput}\n`)) {
-              parser.pause()
-              stream.once('drain', () => {
-                parser.resume()
-              })
-            }
-            activeFileObject = {
-              BYTES: csvRowLength,
-              FILENUM: (maxFileSizeInMb ? 1 : undefined),
-              ROWS: 1,
-              CATEGORY: category,
-              FILTER: filters,
+            const activeFileObject = {
+              BYTES: 0,
+              FILENUM,
+              ROWS: 0,
+              CATEGORY: options.category,
+              FILTER: commandOptions.rowFilters,
               PATH: outputFilePath,
               stream,
             }
-            parser.pause()
 
-            const totalRows = sumBy(files, 'ROWS')
+            // parser.pause()
+            options.files.push(activeFileObject)
+            writeToActiveStream(activeFileObject.PATH, csvOutput, options)
 
-            spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
-            files.push(activeFileObject)
-            await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
-          }
-          else if (!isUndefined(activeFileObject) && !isUndefined(maxFileSizeInMb) && isNumber(maxFileSizeInMb) && (activeFileObject.BYTES + csvRowLength) > (maxFileSizeInMb * 1024 * 1024)) {
-            if (activeFileObject.stream?.writableNeedDrain) {
-              activeFileObject.stream.once('drain', () => {
-                activeFileObject!.stream!.close()
-              })
-            }
-            else {
-              activeFileObject.stream!.close()
-            }
+            const totalRows = sumBy(options.files, 'ROWS')
 
-            const outputFilePath = format({
-              ...parsedOutputFile,
-              name: generateCsvFileName({
-                fileNumber: activeFileObject.FILENUM! + 1,
-                category,
-              }),
-            })
-
-            const stream = createWriteStream(outputFilePath, 'utf-8')
-
-            // stream.on('finish', () => {
-            //   parser.pause()
-
-            //   const totalRows = sumBy(files, 'ROWS')
-
-            //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
-            //   delay(() => parser.resume(), 500)
-            // })
-            if (stream.write(`${csvOutput}\n`)) {
-              parser.pause()
-              stream.once('drain', () => {
-                parser.resume()
-              })
-            }
-
-            const newActiveFileObject = {
-              BYTES: csvRowLength,
-              FILENUM: activeFileObject.FILENUM! + 1,
-              ROWS: 1,
-              FILTER: filters,
-              PATH: outputFilePath,
-              CATEGORY: category!,
-              stream,
-            }
-
-            files.push(newActiveFileObject)
+            options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
+            // await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
           }
           else {
-            activeFileObject.BYTES += csvRowLength
-            activeFileObject.ROWS += 1
+            let activeFileIndex = !isUndefined(options.category) ? findLastIndex(options.files, { CATEGORY: options.category }) : (options.files.length - 1)
 
-            const currentFileIndex = findIndex(files, { PATH: activeFileObject.PATH })
+            if (activeFileIndex > -1 && !isUndefined(commandOptions.fileSize) && isNumber(commandOptions.fileSize) && (options.files[activeFileIndex].BYTES + Buffer.from(csvOutput).length) > (commandOptions.fileSize * 1024 * 1024)) {
+              const activeFileObject = options.files[activeFileIndex]
 
-            files[currentFileIndex] = activeFileObject
-            if (!activeFileObject.stream!.write(`${csvOutput}\n`)) {
-              parser.pause()
-              activeFileObject.stream!.once('drain', () => {
-                parser.resume()
+              if (activeFileObject.stream?.writableNeedDrain) {
+                activeFileObject.stream.once('drain', () => {
+                  activeFileObject!.stream!.close()
+                })
+              }
+              else {
+                activeFileObject.stream!.close()
+              }
+
+              const FILENUM = activeFileObject.FILENUM! + 1
+
+              const outputFilePath = format({
+                ...options.parsedOutputFile,
+                name: createCsvFileName(options, FILENUM),
               })
+
+              const stream = createWriteStream(outputFilePath, 'utf-8')
+
+              const newActiveFileObject = {
+                BYTES: 0,
+                FILENUM,
+                ROWS: 0,
+                PATH: outputFilePath,
+                CATEGORY: options.category,
+                FILTER: commandOptions.rowFilters,
+                stream,
+              }
+
+              options.files.push(newActiveFileObject)
+              activeFileIndex = options.files.length - 1
+              writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+            }
+            else {
+              writeToActiveStream(options.files[activeFileIndex].PATH, csvOutput, options)
             }
           }
-          if ((parsedLines % 1000) === 0 && parsedLines > 0) {
-            const totalRows = sumBy(files, 'ROWS')
+          if ((options.parsedLines % 1000) === 0 && options.parsedLines > 0) {
+            const totalRows = sumBy(options.files, 'ROWS')
 
-            spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`WRITING "${parse(activeFileObject.PATH).base};"`)
+            options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`WRITING "${parse(options.files[activeFileIndex].PATH).base};"`)
           }
         }
       }
     },
     complete: async () => {
-      for (const file of files) {
+      for (const file of options.files) {
         const stream = file.stream
 
         if (typeof stream !== 'undefined') {
@@ -286,29 +224,29 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
         }
       }
 
-      const maxFileNumLength = `${maxBy(files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length
+      const maxFileNumLength = `${maxBy(options.files.filter(o => typeof o.FILENUM !== 'undefined'), 'FILENUM')?.FILENUM ?? ''}`.length
 
-      const parseResults = alphabetical(files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
+      const parseResults = alphabetical(options.files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
 
-      const parseOutputs = files.map((o) => {
+      const parseOutputs = options.files.map((o) => {
         return mapValues(shake(omit(o, ['stream']), v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
       })
 
       const parseResultsCsv = Papa.unparse(parseOutputs)
 
-      const totalRows = sumBy(files, 'ROWS')
+      const totalRows = sumBy(options.files, 'ROWS')
 
-      const totalBytes = sumBy(files, 'BYTES')
+      const totalBytes = sumBy(options.files, 'BYTES')
 
       // spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `)
 
-      const totalFiles = files.length
+      const totalFiles = options.files.length
 
       const summaryString = yaml.stringify({
-        'TOTAL NON-HEADER ROWS PARSED': numbro(parsedLines).format({ thousandSeparated: true }),
-        'TOTAL NON-HEADER ROWS SKIPPED': numbro(skippedLines).format({ thousandSeparated: true }),
+        'TOTAL NON-HEADER ROWS PARSED': numbro(options.parsedLines).format({ thousandSeparated: true }),
+        'TOTAL NON-HEADER ROWS SKIPPED': numbro(options.skippedLines).format({ thousandSeparated: true }),
         'TOTAL NON-HEADER ROWS WRITTEN': numbro(totalRows).format({ thousandSeparated: true }),
-        'TOTAL BYTES READ': numbro(bytesRead).format({
+        'TOTAL BYTES READ': numbro(options.bytesRead).format({
           output: 'byte',
           spaceSeparated: true,
           base: 'binary',
@@ -328,11 +266,11 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
       })
 
-      fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
-      fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
-      if (writeHeaderOnEachFile) {
-        for (const file of files) {
-          const header = Papa.unparse([formatHeaderValues({ data: fields })])
+      fs.outputFileSync(join(options.parsedOutputFile.dir, '..', `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
+      fs.outputFileSync(join(options.parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
+      if (commandOptions.header) {
+        for (const file of options.files) {
+          const header = Papa.unparse([formatHeaderValues({ data: options.fields })])
 
           const openFile = await readFile(file.PATH, 'utf-8')
 
@@ -350,7 +288,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
           },
           {
             name: 'PATH',
-            get: cellValue => chalk.cyan(join('../', relative(parsedInputFile.dir, cellValue as string))),
+            get: cellValue => chalk.cyan(join('../', relative(parse(commandOptions.filePath).dir, cellValue as string))),
           },
           {
             name: 'ROWS',
@@ -379,7 +317,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
       })
 
-      const formattedParsedLines = numbro(parsedLines).format({ thousandSeparated: true })
+      const formattedParsedLines = numbro(options.parsedLines).format({ thousandSeparated: true })
 
       const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
 
@@ -396,45 +334,145 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
       let spinnerText = `SUCCESSFULLY PARSED ${chalk.green(formattedParsedLines)} LINES INTO ${chalk.green(formattedTotalRows)} LINES ACROSS ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
 
-      if (writeHeaderOnEachFile)
+      if (commandOptions.header)
         spinnerText += chalk.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
-      else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(headerFilePath).base}"`)}\n`)
+      else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(join(options.parsedOutputFile.dir, `${options.parsedOutputFile.name} HEADER.csv`)).base}"`)}\n`)
 
-      spinner.stopAndPersist({
+      options.spinner.stopAndPersist({
         symbol: '🚀',
         text: `${spinnerText}\n${table.toString()}`,
       })
       process.exit()
     },
     error(error, _file) {
-      spinner.fail(chalk.red('FAILED TO PARSE FILES\n') + error)
+      options.spinner.fail(chalk.red('FAILED TO PARSE FILES\n') + error)
     },
 
   })
-  function generateCsvFileName({
-    fileNumber,
-    category,
-  }: {
-    fileNumber?: number
-    category?: string | null
-  } = {}): string {
-    let csvFileName = parsedOutputFile.name
+}
+export function filterData(results: Papa.ParseStepResult<JsonPrimitive[] | JsonObject>, options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  skippedLines: number | undefined
+  bytesRead: number | undefined
+  spinner: Ora
+  files: FileMetrics[]
+  fields: string[]
+  parsedLines: number
+}, commandOptions): {
+    isUnfiltered: boolean
+    thisRow: Record<string, JsonPrimitive> | JsonPrimitive[]
+  } {
+  const thisRow = Array.isArray(results.data) && options.fields.length ? zipToObject(options.fields, results.data) : results.data
 
-    if (typeof category !== 'undefined' && category !== null)
-      csvFileName += ` ${category}`
+  const filtersArray = objectEntries(commandOptions.rowFilters ?? {}) as Array<[string, JsonPrimitive[]]>
 
-    if (typeof fileNumber !== 'undefined')
-      csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`
+  let isUnfiltered = isEmpty(commandOptions.rowFilters ?? {}) || Array.isArray(thisRow)
 
-    return filenamify(csvFileName, { replacement: '_' })
+  if (!isUnfiltered && !Array.isArray(thisRow)) {
+    if (commandOptions.matchType === 'none') {
+      isUnfiltered = filtersArray.every(([field, value]) => !value.includes(thisRow[field]))
+    }
+    else if (commandOptions.matchType === 'any') {
+      isUnfiltered = filtersArray.some(([field, value]) => value.includes(thisRow[field]))
+    }
+    else {
+      isUnfiltered = filtersArray.every(([field, value]) => value.includes(thisRow[field]))
+    }
+  }
+
+  return {
+    isUnfiltered,
+    thisRow,
   }
 }
-function formatHeaderValues(results: { data: JsonPrimitive[] }): string[] {
-  return results.data.map((value, index, self) => {
-    const occurrencesAfter = self.slice(index + 1).filter(v => v === value).length
+export function handleCsvOutput(options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  skippedLines: number | undefined
+  bytesRead: number | undefined
+  spinner: Ora
+  files: FileMetrics[]
+  fields: string[]
+  parsedLines: number
+}, commandOptions, csvOutput: string) {
+  let activeFileIndex = options.files.length === 0 ? -1 : options.category ? findLastIndex(options.files, { CATEGORY: options.category }) : (options.files.length - 1)
 
-    const occurrencesBefore = self.slice(0, index).filter(v => v === value).length + 1
+  if (activeFileIndex === -1) {
+    const FILENUM = (commandOptions.fileSize ? 1 : undefined)
 
-    return (occurrencesAfter + occurrencesBefore) > 1 ? `${value}_${occurrencesBefore}` : `${value}`
-  })
+    const outputFilePath = format({
+      ...options.parsedOutputFile,
+      name: createCsvFileName(options, FILENUM),
+    })
+
+    const stream = createWriteStream(outputFilePath, 'utf-8')
+
+    // stream.on('finish', () => {
+    //   parser.pause()
+    //   const totalRows = sumBy(options.files, 'ROWS')
+    //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+    //   delay(() => parser.resume(), 500)
+    // })
+    const activeFileObject = {
+      BYTES: 0,
+      FILENUM,
+      ROWS: 0,
+      CATEGORY: options.category,
+      FILTER: commandOptions.rowFilters,
+      PATH: outputFilePath,
+      stream,
+    }
+
+    // parser.pause()
+    options.files.push(activeFileObject)
+    activeFileIndex = options.files.length - 1
+    writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+
+    const totalRows = sumBy(options.files, 'ROWS')
+
+    options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
+    // await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
+  }
+  else if (activeFileIndex > -1 && !isUndefined(commandOptions.fileSize) && isNumber(commandOptions.fileSize) && (options.files[activeFileIndex].BYTES + Buffer.from(csvOutput).length) > (commandOptions.fileSize * 1024 * 1024)) {
+    const activeFileObject = options.files[activeFileIndex]
+
+    if (activeFileObject.stream?.writableNeedDrain) {
+      activeFileObject.stream.once('drain', () => {
+        activeFileObject!.stream!.close()
+      })
+    }
+    else {
+      activeFileObject.stream!.close()
+    }
+
+    const FILENUM = activeFileObject.FILENUM! + 1
+
+    const outputFilePath = format({
+      ...options.parsedOutputFile,
+      name: createCsvFileName(options, FILENUM),
+    })
+
+    const stream = createWriteStream(outputFilePath, 'utf-8')
+
+    const newActiveFileObject = {
+      BYTES: 0,
+      FILENUM,
+      ROWS: 0,
+      PATH: outputFilePath,
+      CATEGORY: options.category,
+      FILTER: commandOptions.rowFilters,
+      stream,
+    }
+
+    options.files.push(newActiveFileObject)
+    activeFileIndex = options.files.length - 1
+    writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+  }
+  else {
+    writeToActiveStream(options.files[activeFileIndex].PATH, csvOutput, options)
+  }
+  if ((options.parsedLines % 1000) === 0 && options.parsedLines > 0) {
+    const totalRows = sumBy(options.files, 'ROWS')
+
+    options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`WRITING "${parse(options.files[activeFileIndex].PATH).base};"`)
+  }
 }

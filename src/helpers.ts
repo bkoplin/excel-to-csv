@@ -1,7 +1,10 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { ParsedPath } from 'node:path'
 import type {
+  ConditionalPick,
   EmptyObject,
+  Get,
+  JsonPrimitive,
   Merge,
   StringKeyOf,
 } from 'type-fest'
@@ -9,12 +12,14 @@ import type {
   CombinedProgramOptions,
   CSVOptions,
   ExcelOptions,
+  FileMetrics,
   ProgramCommandOptions,
-} from './index'
+} from './types'
 import { homedir } from 'node:os'
 import { objectEntries } from '@antfu/utils'
 import { Separator } from '@inquirer/core'
 import { select } from '@inquirer/prompts'
+import * as Prompts from '@inquirer/prompts'
 import colors from 'chalk'
 import dayjs from 'dayjs'
 import fg from 'fast-glob'
@@ -22,9 +27,11 @@ import filenamify from 'filenamify'
 import fs from 'fs-extra'
 import inquirerFileSelector from 'inquirer-file-selector'
 import {
+  findIndex,
   isArray,
   isNull,
   isObject,
+  padStart,
 } from 'lodash-es'
 import {
   anyOf,
@@ -36,6 +43,7 @@ import {
   whitespace,
 } from 'magic-regexp'
 import ora from 'ora'
+import * as Papa from 'papaparse'
 import {
   basename,
   join,
@@ -45,9 +53,9 @@ import {
   isEmpty,
   objectify,
   omit,
+  tryit,
 } from 'radash'
 import pkg from '../package.json'
-
 /* async_RS reads a stream and returns a Promise resolving to a workbook */
 
 export async function checkAndResolveFilePath(options: {
@@ -81,7 +89,7 @@ export async function checkAndResolveFilePath(options: {
       argFilePath = pathFromHome
     }
     else {
-      ora().warn(colors.magentaBright(`Could not find ${options.fileType === 'CSV' ? 'a CSV' : 'an Excel'} file at the path ${colors.cyanBright(`"${options.argFilePath}"`)}!`))
+      ora().warn(colors.magentaBright(`Could not find ${options.fileType === 'CSV' ? 'a CSV or' : 'an Excel'} file at the path ${colors.cyanBright(`"${options.argFilePath}"`)}!`))
 
       const startingFolder = await selectStartingFolder(options.fileType)
 
@@ -98,7 +106,7 @@ export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise
     fileExtString = `${colors.cyanBright('.xls')} or ${colors.cyanBright('.xlsx')}`
   }
   else {
-    fileExtString = colors.cyanBright('csv')
+    fileExtString = `${colors.cyanBright('.csv')}, ${colors.cyanBright('.txt')} or ${colors.cyanBright('.tsv')}`
   }
 
   const pathRegexp = fileType === 'Excel'
@@ -213,7 +221,7 @@ export function generateCommandLineString(combinedOptions: Merge<CSVOptions, Pro
   }, `${pkg.name} ${command._name!}`)
 }
 export function stringifyValue(val: any): any {
-  const nonAlphaNumericPattern = createRegExp(anyOf(whitespace, linefeed, carriageReturn, '\\', '/'))
+  const nonAlphaNumericPattern = createRegExp(anyOf(whitespace, linefeed, carriageReturn, '|', '\\', '/'))
 
   if (typeof val !== 'string')
     return val
@@ -224,4 +232,72 @@ export function stringifyValue(val: any): any {
 }
 export function isEmptyObject(obj: any): obj is EmptyObject {
   return isObject(obj) && Object.keys(obj).length === 0
+}
+export function formatHeaderValues(results: { data: JsonPrimitive[] }): string[] {
+  return results.data.map((value, index, self) => {
+    const occurrencesAfter = self.slice(index + 1).filter(v => v === value).length
+
+    const occurrencesBefore = self.slice(0, index).filter(v => v === value).length + 1
+
+    return (occurrencesAfter + occurrencesBefore) > 1 ? `${value}_${occurrencesBefore}` : `${value}`
+  })
+}
+export function createCsvFileName(options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  category: string | null | undefined
+}, fileNumber: number | undefined): string {
+  let csvFileName = options.parsedOutputFile.name
+
+  if (typeof category !== 'undefined' && options.category !== null)
+    csvFileName += ` ${options.category}`
+
+  if (typeof fileNumber !== 'undefined')
+    csvFileName += ` ${padStart(`${fileNumber}`, 4, '0')}`
+
+  return filenamify(csvFileName, { replacement: '_' })
+}
+export function createHeaderFile(options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  fields: string[]
+  parsedLines: number
+}, results: Papa.ParseStepResult<JsonPrimitive[]>): void {
+  const headerFile = fs.createWriteStream(join(options.parsedOutputFile.dir, `${options.parsedOutputFile.name} HEADER.csv`), 'utf-8')
+
+  options.fields = formatHeaderValues({ data: results.data })
+  headerFile.end(Papa.unparse([options.fields]))
+}
+export function writeToActiveStream(PATH: string, csvOutput: string, options: { files: FileMetrics[] }): void {
+  const currentFileIndex = findIndex(options.files, { PATH })
+
+  options.files[currentFileIndex]!.BYTES += Buffer.from(csvOutput).length
+  options.files[currentFileIndex]!.ROWS += 1
+  options.files[currentFileIndex].stream!.write(`${csvOutput}\n`)
+}
+
+type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
+
+type PromptKeys = StringKeyOf<PromptsType>
+
+export async function tryPrompt<T extends PromptKeys, Value>(type: T, opts: Parameters<Get<PromptsType, typeof type>>[0], timeout = 5000): Promise<ReturnType<Get<PromptsType, T>> extends Promise<any> ? Promise<[Error, undefined] | [undefined, Awaited<Promise<any> & ReturnType<Get<PromptsType, T>>>]> : [Error, undefined] | [undefined, ReturnType<Get<PromptsType, T>>]> {
+  return tryit<typeof opts, ReturnType<Get<PromptsType, typeof type>>>(o => Prompts[type]<Value>(o, { signal: AbortSignal.timeout(timeout) }))(opts)
+}
+export async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[]) {
+  const [, confirmCategory] = await tryit(Prompts.confirm)({
+    message: 'Would you like to select a field to split the file into separate files?',
+    default: false,
+  }, { signal: AbortSignal.timeout(7500) })
+
+  if (confirmCategory === true) {
+    const [, selectedCategory] = await tryit((Prompts.select<string>))({
+      message: `Select a column to group rows from input file by...`,
+      choices: groupingOptions,
+      loop: true,
+      // pageSize: groupingOptions.length > 15 ? 15 : groupingOptions.length,
+    })
+
+    if (typeof selectedCategory === 'string' && selectedCategory.length) {
+      // globalOptions.categoryField = selectedCategory
+      return selectedCategory
+    }
+  }
 }

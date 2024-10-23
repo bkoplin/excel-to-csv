@@ -1,24 +1,30 @@
+import type * as csv from 'csv'
+import type { Info } from 'csv-parse'
 import type {
-  ConditionalPick,
-  Simplify,
-  StringKeyOf,
+  JsonPrimitive,
+  Primitive,
 } from 'type-fest'
-import {
-  createReadStream,
-  ReadStream,
-} from 'node:fs'
-import {
-  basename,
-  type ParsedPath,
-} from 'node:path'
-import { createInterface } from 'node:readline'
+import type {
+  CSVOptionsWithGlobals,
+  ExcelOptionsWithGlobals,
+} from './types'
+import { createReadStream } from 'node:fs'
+import { basename } from 'node:path'
 import { PassThrough } from 'node:stream'
 import timers from 'node:timers/promises'
+import { isTruthy } from '@antfu/utils'
 import { Command } from '@commander-js/extra-typings'
 import * as Prompts from '@inquirer/prompts'
 import chalk from 'chalk'
+import { parse as parser } from 'csv-parse'
+import { stringify as stringifier } from 'csv-stringify'
 import fs from 'fs-extra'
-import { isUndefined } from 'lodash-es'
+import {
+  isArray,
+  isEmpty,
+  isNull,
+  isUndefined,
+} from 'lodash-es'
 import ora, { oraPromise } from 'ora'
 import Papa from 'papaparse'
 import {
@@ -26,10 +32,15 @@ import {
   parse,
 } from 'pathe'
 import { filename } from 'pathe/utils'
-import { tryit } from 'radash'
+import {
+  get,
+  zipToObject,
+} from 'radash'
+import { transform } from 'stream-transform'
 import yaml from 'yaml'
 import pkg from '../package.json'
 import {
+  compareAndLogRanges,
   extractDataFromWorksheet,
   extractRangeInfo,
   getWorkbook,
@@ -40,68 +51,59 @@ import {
 } from './excel'
 import {
   checkAndResolveFilePath,
+  formatHeaderValues,
   generateCommandLineString,
   generateParsedCsvFilePath,
+  selectGroupingField,
+
+  tryPrompt,
 } from './helpers'
 import categoryOption from './options/categoryField'
 import delimiterOption from './options/delimiter'
-import maxFileSizeOption from './options/fileSize'
+import fileSizeOption from './options/fileSize'
 import fromLineOption from './options/fromLine'
-import includesHeaderOption from './options/includesHeader'
 import makeFilePathOption from './options/makeFilePath'
 import filterTypeOption from './options/matchType'
-import filterValuesOption from './options/rowFilter'
+import includesHeaderOption from './options/rangeIncludesHeader'
+import toLineOption from './options/rowCount'
+import filterValuesOption from './options/rowFilters'
 import sheetNameOption from './options/sheetName'
 import sheetRangeOption from './options/sheetRange'
-import toLineOption from './options/toLineOption'
 import writeHeaderOption from './options/writeHeader'
 import writeCsv from './writeCsv'
-
-type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
-
-type PromptKeys = StringKeyOf<PromptsType>
 
 const spinner = ora({
   hideCursor: false,
   discardStdin: false,
 })
 
-async function tryPrompt<Value>(type: PromptKeys, timeout = 5000) {
-  return tryit(opts => Prompts[type]<Value>(opts, { signal: AbortSignal.timeout(timeout) }))
-}
-
-const program = new Command(pkg.name).version(pkg.version)
+export const program = new Command(pkg.name).version(pkg.version)
 .description('A CLI tool to parse and split Excel Files and split CSV files, includes the ability to filter and group into smaller files based on a column value and/or file size')
 .showSuggestionAfterError(true)
-.configureHelp({
-  sortOptions: true,
-  sortSubcommands: true,
-  showGlobalOptions: true,
-})
-.addOption(filterValuesOption)
-.addOption(categoryOption)
-.addOption(filterTypeOption)
-.addOption(maxFileSizeOption)
-.addOption(writeHeaderOption)
+.configureHelp({ sortSubcommands: true })
 
-const _excelCommands = program.command('excel')
+export const _excelCommands = program.command('excel')
   .description('Parse an Excel file')
   .addOption(makeFilePathOption('Excel'))
+  .addOption(fileSizeOption)
+  .addOption(includesHeaderOption)
+  .addOption(writeHeaderOption)
+  .addOption(filterValuesOption)
+  .addOption(categoryOption)
+  .addOption(filterTypeOption)
   .addOption(sheetNameOption)
   .addOption(sheetRangeOption)
-  .addOption(includesHeaderOption)
-  .action(async (options, command) => {
-    const globalOptions = command.optsWithGlobals < ExcelOptionsWithGlobals>()
+  .action(async (options: ExcelOptionsWithGlobals, command) => {
+    options.command = 'Excel'
 
-    globalOptions.command = 'Excel'
-    globalOptions.filePath = await checkAndResolveFilePath({
+    const newFilePath = await checkAndResolveFilePath({
       fileType: 'Excel',
-      argFilePath: globalOptions.filePath,
+      argFilePath: options.filePath,
     })
 
-    if (command.getOptionValue('filePath') !== globalOptions.filePath)
-      command.setOptionValueWithSource('filePath', globalOptions.filePath, 'env')
-
+    if (newFilePath !== options.filePath) {
+      command.setOptionValueWithSource('filePath', newFilePath, 'env')
+    }
     // ora({
     //   hideCursor: false,
     //   discardStdin: false,
@@ -114,54 +116,63 @@ const _excelCommands = program.command('excel')
     } = await oraPromise(async (_spinner) => {
       // spinner.text = `Reading ${filename(globalOptions.filePath)}`
 
-      const d = await getWorkbook(globalOptions.filePath)
+      const d = await getWorkbook(options.filePath)
 
       await timers.setTimeout(1000)
 
       return d
     }, {
-      text: `Reading ${basename(globalOptions.filePath)}`,
-      successText: chalk.greenBright(`Successfully read ${basename(globalOptions.filePath)}`),
-      failText: chalk.redBright(`failure reading ${basename(globalOptions.filePath)}`),
+      text: `Reading ${basename(options.filePath)}`,
+      successText: chalk.greenBright(`Successfully read ${basename(options.filePath)}`),
+      failText: chalk.redBright(`failure reading ${basename(options.filePath)}`),
 
     })
 
-    if (isUndefined(globalOptions.sheet) || typeof globalOptions.sheet !== 'string' || !wb.SheetNames.includes(globalOptions.sheet)) {
-      globalOptions.sheet = await setSheetName(wb)
-      command.setOptionValueWithSource('sheet', globalOptions.sheet, 'env')
+    if (typeof options.sheetName !== 'string' || !wb.SheetNames.includes(options.sheetName)) {
+      options.sheetName = await setSheetName(wb)
+      command.setOptionValueWithSource('sheet', options.sheetName, 'env')
     }
 
     const parsedOutputFile = generateParsedCsvFilePath({
-      parsedInputFile: parse(globalOptions.filePath),
-      filters: globalOptions.rowFilters,
-      sheetName: globalOptions.sheet,
+      parsedInputFile: parse(options.filePath),
+      filters: options.rowFilters,
+      sheetName: options.sheetName,
     })
 
-    const ws = wb.Sheets[globalOptions.sheet!]
+    const ws = wb.Sheets[options.sheetName!]
 
-    parsedOutputFile.name = `${parsedOutputFile.name} ${globalOptions.sheet}`
+    parsedOutputFile.name = `${parsedOutputFile.name} ${options.sheetName}`
     if (typeof ws === 'undefined') {
-      spinner.fail(`The worksheet "${globalOptions.sheet}" does not exist in the Excel file ${filename(globalOptions.filePath)}`)
+      spinner.fail(`The worksheet "${options.sheetName}" does not exist in the Excel file ${filename(options.filePath)}`)
       process.exit(1)
     }
-    if (!isOverlappingRange(ws, globalOptions.range)) {
-      const selectedRange = await setRange(wb, globalOptions.sheet)
+    if (!isOverlappingRange(ws, options.range)) {
+      const selectedRange = await setRange(wb, options.sheetName)
 
       command.setOptionValueWithSource('range', selectedRange, 'env')
-      globalOptions.range = selectedRange
-      isOverlappingRange(ws, globalOptions.range)
+      options.range = selectedRange
+
+      const {
+
+        parsedWorksheetRange,
+
+        parsedRange,
+        worksheetRange,
+      } = extractRangeInfo(ws, options.range)
+
+      compareAndLogRanges(parsedRange, parsedWorksheetRange, options.range, worksheetRange)
     }
-    if (isUndefined(globalOptions.rangeIncludesHeader)) {
-      globalOptions.rangeIncludesHeader = await setRangeIncludesHeader(globalOptions.range, globalOptions.rangeIncludesHeader)
-      command.setOptionValueWithSource('rangeIncludesHeader', globalOptions.rangeIncludesHeader, 'env')
+    if (isUndefined(options.rangeIncludesHeader)) {
+      options.rangeIncludesHeader = await setRangeIncludesHeader(options.range, options.rangeIncludesHeader)
+      command.setOptionValueWithSource('rangeIncludesHeader', options.rangeIncludesHeader, 'env')
     }
-    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true) {
-      globalOptions.header = false
-      command.parent?.setOptionValueWithSource('header', false, 'env')
+    if (options.rangeIncludesHeader === false && options.writeHeader === true) {
+      options.writeHeader = false
+      command.setOptionValueWithSource('writeHeader', false, 'env')
     }
     // await updateCommandOptions(command, globalOptions)
 
-    const { parsedRange } = extractRangeInfo(ws, globalOptions.range)
+    const { parsedRange } = extractRangeInfo(ws, options.range)
 
     const [fields, ...data] = extractDataFromWorksheet(parsedRange, ws)
 
@@ -169,42 +180,63 @@ const _excelCommands = program.command('excel')
 
     const hasNullUndefinedField = fields.some(f => typeof f === 'undefined' || f === null)
 
-    if (globalOptions.rangeIncludesHeader === true && !globalOptions.categoryField && !hasNullUndefinedField) {
-      await selectGroupingField(groupingOptions, command)
-      globalOptions.categoryField = command.parent!.getOptionValue('categoryField') as string
+    if (options.rangeIncludesHeader === true && !options.categoryField && !hasNullUndefinedField) {
+      const newCategory = await selectGroupingField(groupingOptions, command)
+
+      if (isTruthy(newCategory)) {
+        options.categoryField = newCategory
+        command.setOptionValueWithSource('categoryField', newCategory, 'env')
+      }
     }
     else if (hasNullUndefinedField) {
       spinner.warn(chalk.yellowBright(`The selected range does not seem to include a header row; you will need to restart if you want to group or filter columns`))
-      command.parent!.setOptionValueWithSource('categoryField', undefined, 'env')
-      command.parent!.setOptionValueWithSource('header', undefined, 'env')
-      command.parent!.setOptionValueWithSource('rangeIncludesHeader', undefined, 'env')
-      command.setOptionValueWithSource('rowFilters', undefined, 'env')
+      command.setOptionValueWithSource('categoryField', undefined, 'env')
+      command.setOptionValueWithSource('writeHeader', false, 'env')
+      command.setOptionValueWithSource('rangeIncludesHeader', false, 'env')
+      command.setOptionValueWithSource('rowFilters', {}, 'env')
+      options = {
+        ...options,
+        categoryField: undefined,
+        writeHeader: false,
+        rangeIncludesHeader: false,
+        rowFilters: {},
+      }
       await timers.setTimeout(2500)
     }
 
     const csv = Papa.unparse([fields, ...data], { delimiter: '|' })
 
-    const commandLineString = generateCommandLineString(globalOptions, command)
+    const commandLineString = generateCommandLineString(options, command)
 
+    const transformStream = makeTransformStream(data.map(values => zipToObject(fields, values)), options)
+
+    transformStream.on('data', (data) => {
+      console.log(data)
+    })
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
-      parsedCommandOptions: globalOptions,
+      parsedCommandOptions: options,
       commandLineString,
     }, { lineWidth: 1000 }))
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
-    writeCsv(ReadStream.from(csv), {
-      ...globalOptions,
-      parsedOutputFile,
-      bytesRead,
-    })
+    // writeCsv(ReadStream.from(csv), {
+    //   ...options,
+    //   parsedOutputFile,
+    //   bytesRead,
+    // })
   })
 
-const _csvCommands = program.command('csv')
+export const _csvCommands = program.command('csv')
   .description('Parse a CSV file')
   .addOption(makeFilePathOption('CSV'))
-  .addOption(skipLinesOption)
-  .addOption(rowCountOption)
+  .addOption(fromLineOption)
+  .addOption(toLineOption)
+  .addOption(fileSizeOption)
   .addOption(includesHeaderOption)
+  .addOption(writeHeaderOption)
+  .addOption(filterValuesOption)
+  .addOption(categoryOption)
+  .addOption(delimiterOption)
   .action(async (options, command) => {
     const globalOptions = command.optsWithGlobals<CSVOptionsWithGlobals>()
 
@@ -221,9 +253,9 @@ const _csvCommands = program.command('csv')
       })
       command.setOptionValueWithSource('rangeIncludesHeader', globalOptions.rangeIncludesHeader, 'env')
     }
-    if (globalOptions.rangeIncludesHeader === false && globalOptions.header === true) {
-      globalOptions.header = false
-      command.parent?.setOptionValueWithSource('header', false, 'env')
+    if (globalOptions.rangeIncludesHeader === false && globalOptions.writeHeader === true) {
+      globalOptions.writeHeader = false
+      command.parent?.setOptionValueWithSource('writeHeader', false, 'env')
     }
 
     const parsedOutputFile = generateParsedCsvFilePath({
@@ -238,86 +270,153 @@ const _csvCommands = program.command('csv')
     parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
     fs.ensureDirSync(parsedOutputFile.dir)
 
-    const sourceStream = createReadStream(globalOptions.filePath, 'utf-8')
+    let recordCount = 0
 
-    const inputStreamReader = new PassThrough({ encoding: 'utf-8' })
+    let skippedLines = 1 - globalOptions.fromLine
 
-    const lineReader = createInterface({ input: sourceStream })
+    let header: Exclude<csv.parser.ColumnOption, Primitive>[] = []
 
-    let skippedLines = 0
+    let tryToSetCategory = true
+
+    let isWriting = false
 
     let bytesRead = 0
 
-    lineReader.on('close', () => {
-      writeCsv(inputStreamReader, {
-        ...globalOptions,
-        parsedOutputFile,
-        skippedLines: skippedLines - 1,
+    let inputStreamReader: csv.stringifier.Stringifier
+    // const inputStreamReader = stringifier({
+    //   bom: true,
+    //   columns: globalOptions.rangeIncludesHeader && header.length > 0 ? header : undefined,
+    //   header: globalOptions.rangeIncludesHeader ? header.length > 0 : undefined,
+    // })
 
-        bytesRead,
-      })
-    })
-    lineReader.on('line', (line) => {
-      if ('skipLines' in globalOptions && (globalOptions.skipLines || -1) > 0 && skippedLines < (globalOptions.skipLines || -1)) {
-        skippedLines++
-      }
-      else {
-        const formattedLine = `${line}\n`
+    const sourceStream = createReadStream(globalOptions.filePath, 'utf-8')
 
-        bytesRead += Buffer.from(formattedLine).length
-        inputStreamReader.write(formattedLine)
-      }
+    const outputStream = new PassThrough({ encoding: 'utf-8' })
+
+    const lineReader = parser({
+      bom: true,
+      from_line: globalOptions.fromLine,
+      to_line: isNull(globalOptions.toLine) ? undefined : globalOptions.toLine,
+      trim: true,
+      delimiter: globalOptions.delimiter,
+      columns: (record: string[]) => {
+        if (globalOptions.rangeIncludesHeader !== true)
+          return false
+
+        return formatHeaderValues({ data: record })
+
+        // return header
+      },
+      info: true,
+      skip_records_with_error: true,
+      on_record: ({
+        info,
+        record,
+      }: {
+        info: Info
+        record: Record<string, string> | Array<string>
+      }) => {
+        bytesRead = info.bytes
+        recordCount = info.records
+        skippedLines = info.lines - info.records
+        if (header.length === 0 && isArray(info.columns)) {
+          header = info.columns as Exclude<csv.parser.ColumnOption, Primitive>[]
+        }
+
+        return {
+          info,
+          record,
+        }
+      },
     })
+
+    // .pipe(outputStream)
+    // .pipe(outputStream)
+    lineReader.on('data', async ({
+      // info,
+      record,
+    }: {
+      info: Info
+      record: Record<string, string> | Array<string>
+    }) => {
+      if (globalOptions.rangeIncludesHeader === true && !globalOptions.categoryField && tryToSetCategory) {
+        lineReader.pause()
+        await selectGroupingField(Object.keys(record), command)
+        globalOptions.categoryField = command.parent!.getOptionValue('categoryField') as string
+        tryToSetCategory = false
+        lineReader.resume()
+      }
+      if (typeof inputStreamReader === 'undefined') {
+        if (header.length > 0 && globalOptions.rangeIncludesHeader) {
+          inputStreamReader = stringifier({
+            bom: true,
+            columns: header.map(({ name }) => ({
+              name,
+              key: name,
+            })),
+            header: globalOptions.header,
+          })
+        }
+        else {
+          inputStreamReader = stringifier({ bom: true })
+        }
+        lineReader.pipe(inputStreamReader).pipe(outputStream)
+      }
+      else if (isWriting === false) {
+        writeCsv(outputStream, globalOptions, {
+          parsedOutputFile,
+          skippedLines,
+          bytesRead,
+          spinner,
+          files: [],
+          fields: (header ?? []).map(h => h.name),
+          parsedLines: skippedLines + recordCount,
+        })
+        isWriting = true
+      }
+      // inputStreamReader.write(line)
+      // else {
+      //   inputStreamReader.write(line)
+      // }
+    })
+    sourceStream.pipe(lineReader)
   })
 
-type CsvCommand = typeof _csvCommands
-
-type ExcelCommand = typeof _excelCommands
-
-type ProgramCommand = typeof program
-
-export type CSVOptions = ReturnType<CsvCommand['opts']>
-
-export type ExcelOptions = ReturnType<ExcelCommand['opts']>
-
-export type ProgramCommandOptions = ReturnType<ProgramCommand['opts']>
-
-export type CSVOptionsWithGlobals = Simplify<CSVOptions & ProgramCommandOptions & {
-  skippedLines: number
-  rowCount: number
-  parsedOutputFile: Omit<ParsedPath, 'base'>
-  bytesRead: number
-  command: `CSV`
-}>
-
-export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & ProgramCommandOptions & {
-  parsedOutputFile: Omit<ParsedPath, 'base'>
-  bytesRead: number
-  command: `Excel`
-}>
-
-export type CombinedProgramOptions = Simplify<CSVOptions & ExcelOptions & ProgramCommandOptions>
-
 program.parse(process.argv)
-async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[], command: Command): Promise<void> {
-  const [confirmErr, confirmCategory] = await tryit(Prompts.confirm)({
-    message: 'Would you like to select a field to split the file into separate files?',
-    default: false,
-  }, { signal: AbortSignal.timeout(7500) })
+function makeTransformStream<T>(data: T[], options) {
+  return transform<T>(data, (record) => {
+    const filterCriteria = options.rowFilters
 
-  if (confirmCategory === true) {
-    const [categoryErr, selectedCategory] = await tryit(Prompts.select<string>)({
-      message: `Select a column to group rows from input file by...`,
-      choices: groupingOptions,
-      loop: true,
-      // pageSize: groupingOptions.length > 15 ? 15 : groupingOptions.length,
-    })
-
-    if (selectedCategory) {
-      // globalOptions.categoryField = selectedCategory
-      command.parent!.setOptionValueWithSource('categoryField', selectedCategory, 'env')
+    if (isArray(record)) {
+      return record
     }
-  }
+    else if (isEmpty(filterCriteria)) {
+      return record
+    }
+    else {
+      const testResults: boolean[] = []
+
+      for (const filterKey in filterCriteria) {
+        const filterVal = get(filterCriteria, filterKey, []) as JsonPrimitive[]
+
+        const filterTest = filterVal.includes(get(record, filterKey, false))
+
+        testResults.push(filterTest)
+      }
+      if (options.matchType === 'all' && testResults.every(v => v === true)) {
+        return record
+      }
+      else if (options.matchType === 'any' && testResults.includes(true)) {
+        return record
+      }
+      else if (options.matchType === 'none' && testResults.every(v => v === false)) {
+        return record
+      }
+      else {
+        return null
+      }
+    }
+  }, { parallel: 1 })
 }
 async function updateCommandOptions(command, globalOptions) {
   for (const commandOption of command.options) {
@@ -330,14 +429,15 @@ async function updateCommandOptions(command, globalOptions) {
     if (typeof source !== 'undefined' && source !== 'env') {
       const optionMessage = `Should ${chalk.yellowBright(commandOption.long)} be set to ${chalk.cyanBright(val)}?\n(${commandOption.description})`
 
-      const [, setValueAnswer] = await tryPrompt('confirm')({
+      const [, setValueAnswer] = await tryPrompt('confirm', {
         message: optionMessage,
         default: true,
+
       })
 
       if (setValueAnswer === false) {
         if (commandOption.argChoices) {
-          const [, optionValue] = await tryPrompt('select')({
+          const [, optionValue] = await tryPrompt('select', {
             message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
             choices: commandOption.argChoices,
             default: val,
@@ -346,7 +446,7 @@ async function updateCommandOptions(command, globalOptions) {
           // globalOptions[attributeName] = optionValue
         }
         else if (typeof val === 'boolean') {
-          const [, optionValue] = await tryPrompt('select')({
+          const [, optionValue] = await tryPrompt('select', {
             message: `${chalk.yellowBright(commandOption.long)} (${commandOption.description})`,
             default: val,
             choices: [{

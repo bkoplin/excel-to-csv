@@ -36,7 +36,6 @@
     "jsonc",
     "yaml"
   ],
-  "typescript.tsdk": "node_modules/typescript/lib",
   "gitlens.experimental.generateCommitMessagePrompt": "Now, please generate a commit message. Prefix the commit message with a semantic versioning label like \"feat,\" \"chore,\" \"fix,\" etc. If the changes in any of the files change the inputs, arguments, or outputs of any functions in the files, the prefix should be followed with an exclamation point to indicate that the changes are breaking changes. Ensure that the commit message is a precise and informative subject line that succinctly summarizes the crux of the changes in under 75 characters. Do not use phrases like \"this commit\", \"this change\", etc.   Follow with a newline and an explanatory body that is a markdown-syntax unordered list providing insight into the nature of the changes, the reasoning behind them, and any significant consequences or considerations arising from them. When listing the changes, group the changes by file if more than one file has changed. When listing by file, use the relative path from the project root as a bullet, then indent and list the major changes to the file.   Conclude with any relevant issue references at the end of the message.",
   "files.exclude": {
     "**/.git": false,
@@ -48,5 +47,6 @@
   },
   "explorerExclude.backup": {},
   "eslint.codeActionsOnSave.mode": "all",
-  "editor.wordWrap": "on"
+  "editor.wordWrap": "on",
+  "typescript.tsdk": "node_modules/typescript/lib"
 }
