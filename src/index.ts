@@ -30,19 +30,6 @@ import { tryit } from 'radash'
 import yaml from 'yaml'
 import pkg from '../package.json'
 import {
-  categoryOption,
-  filterTypeOption,
-  filterValuesOption,
-  includesHeaderOption,
-  makeFilePathOption,
-  maxFileSizeOption,
-  rowCountOption,
-  sheetNameOption,
-  sheetRangeOption,
-  skipLinesOption,
-  writeHeaderOption,
-} from './arguments'
-import {
   extractDataFromWorksheet,
   extractRangeInfo,
   getWorkbook,
@@ -56,6 +43,18 @@ import {
   generateCommandLineString,
   generateParsedCsvFilePath,
 } from './helpers'
+import categoryOption from './options/categoryField'
+import delimiterOption from './options/delimiter'
+import maxFileSizeOption from './options/fileSize'
+import fromLineOption from './options/fromLine'
+import includesHeaderOption from './options/includesHeader'
+import makeFilePathOption from './options/makeFilePath'
+import filterTypeOption from './options/matchType'
+import filterValuesOption from './options/rowFilter'
+import sheetNameOption from './options/sheetName'
+import sheetRangeOption from './options/sheetRange'
+import toLineOption from './options/toLineOption'
+import writeHeaderOption from './options/writeHeader'
 import writeCsv from './writeCsv'
 
 type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
