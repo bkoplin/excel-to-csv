@@ -146,11 +146,11 @@ export const _excelCommands = program.command('excel')
       spinner.fail(`The worksheet "${options.sheetName}" does not exist in the Excel file ${filename(options.filePath)}`)
       process.exit(1)
     }
-    if (!isOverlappingRange(ws, options.range)) {
+    if (!isOverlappingRange(ws, options.sheetRange)) {
       const selectedRange = await setRange(wb, options.sheetName)
 
-      command.setOptionValueWithSource('range', selectedRange, 'env')
-      options.range = selectedRange
+      command.setOptionValueWithSource('sheetRange', selectedRange, 'env')
+      options.sheetRange = selectedRange
 
       const {
 
@@ -158,12 +158,12 @@ export const _excelCommands = program.command('excel')
 
         parsedRange,
         worksheetRange,
-      } = extractRangeInfo(ws, options.range)
+      } = extractRangeInfo(ws, options.sheetRange)
 
-      compareAndLogRanges(parsedRange, parsedWorksheetRange, options.range, worksheetRange)
+      compareAndLogRanges(parsedRange, parsedWorksheetRange, options.sheetRange, worksheetRange)
     }
     if (isUndefined(options.rangeIncludesHeader)) {
-      options.rangeIncludesHeader = await setRangeIncludesHeader(options.range, options.rangeIncludesHeader)
+      options.rangeIncludesHeader = await setRangeIncludesHeader(options.sheetRange, options.rangeIncludesHeader)
       command.setOptionValueWithSource('rangeIncludesHeader', options.rangeIncludesHeader, 'env')
     }
     if (options.rangeIncludesHeader === false && options.writeHeader === true) {
@@ -172,7 +172,7 @@ export const _excelCommands = program.command('excel')
     }
     // await updateCommandOptions(command, globalOptions)
 
-    const { parsedRange } = extractRangeInfo(ws, options.range)
+    const { parsedRange } = extractRangeInfo(ws, options.sheetRange)
 
     const [fields, ...data] = extractDataFromWorksheet(parsedRange, ws)
 
@@ -208,11 +208,14 @@ export const _excelCommands = program.command('excel')
 
     const commandLineString = generateCommandLineString(options, command)
 
-    const transformStream = makeTransformStream(data.map(values => zipToObject(fields, values)), options)
+    const transformStream = makeTransformStream(options)
 
     transformStream.on('data', (data) => {
       console.log(data)
     })
+    for (const d of data) {
+      transformStream.write(zipToObject(fields as string[], d))
+    }
     fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), yaml.stringify({
       parsedCommandOptions: options,
       commandLineString,
@@ -383,8 +386,8 @@ export const _csvCommands = program.command('csv')
   })
 
 program.parse(process.argv)
-function makeTransformStream<T>(data: T[], options) {
-  return transform<T>(data, (record) => {
+function makeTransformStream<T>(options) {
+  return transform<T>((record) => {
     const filterCriteria = options.rowFilters
 
     if (isArray(record)) {
