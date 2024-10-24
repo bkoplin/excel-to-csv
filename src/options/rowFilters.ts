@@ -9,28 +9,30 @@ import {
   isNaN,
   toNumber,
 } from 'lodash-es'
+import { createRegExp } from 'magic-regexp'
 
-export default new Option(
+export default new Option<'--row-filters [operators...]', undefined, EmptyObject, Record<string, (JsonPrimitive | RegExp)[]>>(
   '--row-filters [operators...]',
-  `a header/value pair to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}`}. \nTo apply multiple filters, input the option multiple times, e.g., \n${`${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 1]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 2]')} \n${chalk.whiteBright('-f')} ${chalk.cyan('[COLULMN NAME 2]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 3]')}`}`,
+`a header/value pair to apply as a filter to each row as ${`${chalk.cyan('[COLULMN NAME|INDEX]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE]')}${chalk.magentaBright('[:R]')}`}. \nThe ${chalk.magentaBright('[:R]')} is an optional addition that indicates that the filter is a regular expression. If not included, ${chalk.cyan('[COLULMN NAME|INDEX]')} must match ${chalk.yellow('[FILTER VALUE]')} exactly. \nTo apply multiple filters, input the option multiple times, e.g., \n${`${chalk.whiteBright('--row-filters')} ${chalk.cyan('[COLULMN NAME|INDEX 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 1]')} \n${chalk.whiteBright('--row-filters')} ${chalk.cyan('[COLULMN NAME|INDEX 1]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 2]')}${chalk.magentaBright(':R')} \n${chalk.whiteBright('--row-filters')} ${chalk.cyan('[COLULMN NAME|INDEX 2]')}${chalk.whiteBright(':')}${chalk.yellow('[FILTER VALUE 3]')}`}`,
 )
   .implies({ matchType: `all` })
   .preset(undefined as unknown as EmptyObject)
   .default(undefined as unknown as EmptyObject)
-  .argParser<Record<string, Array<JsonPrimitive>>>((val, filters = {}) => {
-    return processRowFilter(val, filters)
-  })
+  .argParser<Record<string, (JsonPrimitive | RegExp)[]>>((val, filters = {}): Record<string, (JsonPrimitive | RegExp)[]> => processRowFilter(val, filters))
 
-export function processRowFilter(val: string, filters: Record<string, JsonPrimitive[]>): Record<string, JsonPrimitive[]> {
+export function processRowFilter(val: string | `${string}:${string}` | `${string}:${string}:R`, filters: Record<string, (JsonPrimitive | RegExp)[]>): Record<string, (JsonPrimitive | RegExp)[]> {
   if (typeof val !== 'undefined' && !isEmpty(val)) {
-    const [key, value] = (val || '').split(':').map(v => v.trim())
+    const [key, value, regexp] = (val || '').split(':').map(v => v.trim()) as [string] | [string, string] | [string, string, `R`]
 
     if (key.length) {
       if (!filters[key])
         filters[key] = []
 
       if (value.length) {
-        if (!isNaN(toNumber(value))) {
+        if (regexp === 'R') {
+          filters[key] = [...filters[key], createRegExp(value)]
+        }
+        else if (!isNaN(toNumber(value))) {
           filters[key] = [...filters[key], toNumber(value)]
         }
         else if (value === 'true' || value === 'false') {
@@ -46,5 +48,5 @@ export function processRowFilter(val: string, filters: Record<string, JsonPrimit
     }
   }
 
-  return filters
+  return filters as Record<string, (JsonPrimitive | RegExp)[]>
 }

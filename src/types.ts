@@ -7,9 +7,9 @@ import type {
 } from 'type-fest'
 import type {
   _csvCommands,
-  _excelCommands,
   program,
 } from '.'
+import type { excelCommamd } from './subcommands/excelCommand'
 
 export interface FileMetrics {
   BYTES: number
@@ -23,7 +23,7 @@ export interface FileMetrics {
 
 type CsvCommand = typeof _csvCommands
 
-type ExcelCommand = typeof _excelCommands
+type ExcelCommand = typeof excelCommamd
 
 type ProgramCommand = typeof program
 
@@ -36,13 +36,11 @@ export type CSVOptionsWithGlobals = Simplify<CSVOptions & {
   rowCount: number
   parsedOutputFile: Omit<ParsedPath, 'base'>
   bytesRead: number
-  command: `CSV`
 }>
 
 export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & {
   parsedOutputFile: Omit<ParsedPath, 'base'>
   bytesRead: number
-  command: `Excel`
 }>
 
 export type CombinedProgramOptions = TaggedUnion<'command', {

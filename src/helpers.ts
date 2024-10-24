@@ -5,15 +5,11 @@ import type {
   EmptyObject,
   Get,
   JsonPrimitive,
-  Merge,
   StringKeyOf,
 } from 'type-fest'
 import type {
   CombinedProgramOptions,
-  CSVOptions,
-  ExcelOptions,
   FileMetrics,
-  ProgramCommandOptions,
 } from './types'
 import { homedir } from 'node:os'
 import { objectEntries } from '@antfu/utils'
@@ -28,7 +24,10 @@ import fs from 'fs-extra'
 import inquirerFileSelector from 'inquirer-file-selector'
 import {
   findIndex,
+  has,
   isArray,
+  isEmpty,
+  isNil,
   isNull,
   isObject,
   padStart,
@@ -50,11 +49,13 @@ import {
   relative,
 } from 'pathe'
 import {
+  get,
   isEmpty,
   objectify,
   omit,
   tryit,
 } from 'radash'
+import yaml from 'yaml'
 import pkg from '../package.json'
 /* async_RS reads a stream and returns a Promise resolving to a workbook */
 
@@ -195,7 +196,7 @@ export function generateParsedCsvFilePath({
 
   return parsedOutputFile
 }
-export function generateCommandLineString(combinedOptions: Merge<CSVOptions, ProgramCommandOptions> | Merge<ExcelOptions, ProgramCommandOptions>, command: Command & { _name?: string }): string {
+export function generateCommandLineString(combinedOptions: CombinedProgramOptions, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
     const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as StringKeyOf<CombinedProgramOptions>, o => o.long as string)
 
@@ -300,4 +301,61 @@ export async function selectGroupingField(groupingOptions: (string | Prompts.Sep
       return selectedCategory
     }
   }
+}
+export function applyFilters(options: CombinedProgramOptions): boolean {
+  return (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
+    const filterCriteria = options.rowFilters
+
+    if (!('matchType' in options)) {
+      return true
+    }
+    else if (isEmptyObject(filterCriteria)) {
+      return true
+    }
+    else {
+      const testResults: boolean[] = []
+
+      for (const filterKey in filterCriteria) {
+        const filterVal = get(filterCriteria, filterKey, [] as (RegExp | JsonPrimitive)[])
+
+        const filterTest = filterVal.some((val) => {
+          const recordFieldValue = get(record, filterKey)
+
+          if (!has(record, filterKey)) {
+            return false
+          }
+
+          else if (val instanceof RegExp) {
+            return val.test(`${recordFieldValue}`)
+          }
+          else if (typeof val === 'boolean') {
+            return val === !isNil(recordFieldValue)
+          }
+          else {
+            return `${val}` === recordFieldValue
+          }
+        })
+
+        testResults.push(filterTest)
+      }
+      if (options.matchType === 'all' && testResults.every(v => v === true)) {
+        return true
+      }
+      else if (options.matchType === 'any' && testResults.includes(true)) {
+        return true
+      }
+      else if (options.matchType === 'none' && testResults.every(v => v === false)) {
+        return true
+      }
+      else {
+        return false
+      }
+    }
+  }
+}
+export function stringifyCommandOptions(options, commandLineString: string): string {
+  return yaml.stringify({
+    'ALL OPTIONS': options,
+    'COMMAND': commandLineString,
+  }, { lineWidth: 1000 })
 }

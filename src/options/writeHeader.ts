@@ -1,4 +1,6 @@
 import { Option } from '@commander-js/extra-typings'
+import isBoolean from 'validator/lib/isBoolean'
+import toBoolean from 'validator/lib/toBoolean'
 
 export default new Option(
   '-w, --write-header [boolean]',
@@ -6,3 +8,4 @@ export default new Option(
 )
   .default(false)
   .preset(true)
+  .argParser((val: string): boolean => isBoolean(val, { loose: true }) ? toBoolean(val) : false)

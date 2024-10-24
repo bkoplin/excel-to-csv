@@ -5,7 +5,7 @@ export default new Option(
   '--category-field [column name]',
   'the name of a column whose value will be used to create each separate file',
 )
-  .default<undefined>(undefined)
+  .default<undefined>('', 'records will not be split into separate files')
   .preset<undefined>(undefined)
   .argParser<string | undefined>((val): string | undefined => {
     if (isEmpty(val)) {
