@@ -118,83 +118,7 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
           const csvOutput = Papa.unparse([results.data])
 
-          if (options.files.length === 0) {
-            const FILENUM = (commandOptions.fileSize ? 1 : undefined)
-
-            const outputFilePath = format({
-              ...options.parsedOutputFile,
-              name: createCsvFileName(options, FILENUM),
-            })
-
-            const stream = createWriteStream(outputFilePath, 'utf-8')
-
-            // stream.on('finish', () => {
-            //   parser.pause()
-            //   const totalRows = sumBy(options.files, 'ROWS')
-            //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
-            //   delay(() => parser.resume(), 500)
-            // })
-            const activeFileObject = {
-              BYTES: 0,
-              FILENUM,
-              ROWS: 0,
-              CATEGORY: options.category,
-              FILTER: commandOptions.rowFilters,
-              PATH: outputFilePath,
-              stream,
-            }
-
-            // parser.pause()
-            options.files.push(activeFileObject)
-            writeToActiveStream(activeFileObject.PATH, csvOutput, options)
-
-            const totalRows = sumBy(options.files, 'ROWS')
-
-            options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
-            // await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
-          }
-          else {
-            let activeFileIndex = !isUndefined(options.category) ? findLastIndex(options.files, { CATEGORY: options.category }) : (options.files.length - 1)
-
-            if (activeFileIndex > -1 && !isUndefined(commandOptions.fileSize) && isNumber(commandOptions.fileSize) && (options.files[activeFileIndex].BYTES + Buffer.from(csvOutput).length) > (commandOptions.fileSize * 1024 * 1024)) {
-              const activeFileObject = options.files[activeFileIndex]
-
-              if (activeFileObject.stream?.writableNeedDrain) {
-                activeFileObject.stream.once('drain', () => {
-                  activeFileObject!.stream!.close()
-                })
-              }
-              else {
-                activeFileObject.stream!.close()
-              }
-
-              const FILENUM = activeFileObject.FILENUM! + 1
-
-              const outputFilePath = format({
-                ...options.parsedOutputFile,
-                name: createCsvFileName(options, FILENUM),
-              })
-
-              const stream = createWriteStream(outputFilePath, 'utf-8')
-
-              const newActiveFileObject = {
-                BYTES: 0,
-                FILENUM,
-                ROWS: 0,
-                PATH: outputFilePath,
-                CATEGORY: options.category,
-                FILTER: commandOptions.rowFilters,
-                stream,
-              }
-
-              options.files.push(newActiveFileObject)
-              activeFileIndex = options.files.length - 1
-              writeToActiveStream(activeFileObject.PATH, csvOutput, options)
-            }
-            else {
-              writeToActiveStream(options.files[activeFileIndex].PATH, csvOutput, options)
-            }
-          }
+          writeCsvOutput(options, commandOptions, csvOutput)
           if ((options.parsedLines % 1000) === 0 && options.parsedLines > 0) {
             const totalRows = sumBy(options.files, 'ROWS')
 
@@ -349,6 +273,93 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
     },
 
   })
+}
+function writeCsvOutput(options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  skippedLines: number | undefined
+  bytesRead: number | undefined
+  spinner: Ora
+  files: FileMetrics[]
+  fields: string[]
+  parsedLines: number
+}, commandOptions, csvOutput: string) {
+  if (options.files.length === 0) {
+    const FILENUM = (commandOptions.fileSize ? 1 : undefined)
+
+    const outputFilePath = format({
+      ...options.parsedOutputFile,
+      name: createCsvFileName(options, FILENUM),
+    })
+
+    const stream = createWriteStream(outputFilePath, 'utf-8')
+
+    // stream.on('finish', () => {
+    //   parser.pause()
+    //   const totalRows = sumBy(options.files, 'ROWS')
+    //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+    //   delay(() => parser.resume(), 500)
+    // })
+    const activeFileObject = {
+      BYTES: 0,
+      FILENUM,
+      ROWS: 0,
+      CATEGORY: options.category,
+      FILTER: commandOptions.rowFilters,
+      PATH: outputFilePath,
+      stream,
+    }
+
+    // parser.pause()
+    options.files.push(activeFileObject)
+    writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+
+    const totalRows = sumBy(options.files, 'ROWS')
+
+    options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
+    // await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
+  }
+  else {
+    let activeFileIndex = !isUndefined(options.category) ? findLastIndex(options.files, { CATEGORY: options.category }) : (options.files.length - 1)
+
+    if (activeFileIndex > -1 && !isUndefined(commandOptions.fileSize) && isNumber(commandOptions.fileSize) && (options.files[activeFileIndex].BYTES + Buffer.from(csvOutput).length) > (commandOptions.fileSize * 1024 * 1024)) {
+      const activeFileObject = options.files[activeFileIndex]
+
+      if (activeFileObject.stream?.writableNeedDrain) {
+        activeFileObject.stream.once('drain', () => {
+          activeFileObject!.stream!.close()
+        })
+      }
+      else {
+        activeFileObject.stream!.close()
+      }
+
+      const FILENUM = activeFileObject.FILENUM! + 1
+
+      const outputFilePath = format({
+        ...options.parsedOutputFile,
+        name: createCsvFileName(options, FILENUM),
+      })
+
+      const stream = createWriteStream(outputFilePath, 'utf-8')
+
+      const newActiveFileObject = {
+        BYTES: 0,
+        FILENUM,
+        ROWS: 0,
+        PATH: outputFilePath,
+        CATEGORY: options.category,
+        FILTER: commandOptions.rowFilters,
+        stream,
+      }
+
+      options.files.push(newActiveFileObject)
+      activeFileIndex = options.files.length - 1
+      writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+    }
+    else {
+      writeToActiveStream(options.files[activeFileIndex].PATH, csvOutput, options)
+    }
+  }
 }
 export function filterData(results: Papa.ParseStepResult<JsonPrimitive[] | JsonObject>, options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>

@@ -1,4 +1,6 @@
 import type { JsonPrimitive } from 'type-fest'
+import type { FileMetrics } from '../types'
+import { createWriteStream } from 'node:fs'
 import { basename } from 'node:path'
 import timers from 'node:timers/promises'
 import {
@@ -15,6 +17,7 @@ import {
 } from 'lodash-es'
 import ora, { oraPromise } from 'ora'
 import {
+  format,
   join,
   parse,
 } from 'pathe'
@@ -34,6 +37,7 @@ import {
 import {
   applyFilters,
   checkAndResolveFilePath,
+  createCsvFileName,
   generateCommandLineString,
   generateParsedCsvFilePath,
   stringifyCommandOptions,
@@ -220,6 +224,29 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     }
   }
 
+  const files: FileMetrics[] = []
+
+  const outputFilePath = format({
+    ...parsedOutputFile,
+    name: createCsvFileName({
+      ...options,
+      parsedOutputFile,
+
+    }, options.fileSize ? 1 : undefined),
+  })
+
+  const writeStream = createWriteStream(outputFilePath, 'utf-8')
+
+  files.push({
+    BYTES: 0,
+    FILENUM: 1,
+    ROWS: 0,
+    CATEGORY: options.categoryField,
+    FILTER: options.rowFilters,
+    PATH: outputFilePath,
+    stream: writeStream,
+  })
+
   const stringifyStream = stringify({
     bom: true,
     columns: options.rangeIncludesHeader ? fields : undefined,
@@ -227,7 +254,100 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   })
 
   stringifyStream.on('data', (data) => {
-    console.log(data.toString())
+    files[files.length - 1].BYTES += Buffer.from(data).length
+    files[files.length - 1].ROWS += 1
+    files[files.length - 1].stream.write(data)
+    // console.log({
+    //   byteLength: data.length,
+    //   string: data.toString(),
+    // })
   })
   dataStream.pipe(stringifyStream)
+}
+function writeCsvOutput(options: {
+  parsedOutputFile: Omit<ParsedPath, 'base'>
+  skippedLines: number | undefined
+  bytesRead: number | undefined
+  spinner: Ora
+  files: FileMetrics[]
+  fields: string[]
+  parsedLines: number
+}, commandOptions, csvOutput: string) {
+  if (options.files.length === 0) {
+    const FILENUM = (commandOptions.fileSize ? 1 : undefined)
+
+    const outputFilePath = format({
+      ...options.parsedOutputFile,
+      name: createCsvFileName(options, FILENUM),
+    })
+
+    const stream = createWriteStream(outputFilePath, 'utf-8')
+
+    // stream.on('finish', () => {
+    //   parser.pause()
+    //   const totalRows = sumBy(options.files, 'ROWS')
+    //   spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`FINISHED WITH "${filename(outputFilePath)}"`)
+    //   delay(() => parser.resume(), 500)
+    // })
+    const activeFileObject = {
+      BYTES: 0,
+      FILENUM,
+      ROWS: 0,
+      CATEGORY: options.category,
+      FILTER: commandOptions.rowFilters,
+      PATH: outputFilePath,
+      stream,
+    }
+
+    // parser.pause()
+    options.files.push(activeFileObject)
+    writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+
+    const totalRows = sumBy(options.files, 'ROWS')
+
+    options.spinner.text = chalk.magentaBright(`PARSED ${numbro(options.parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `) + chalk.yellow(`CREATED "${filename(outputFilePath)};"`)
+    // await new Promise(resolve => delay(() => resolve(parser.resume()), 500))
+  }
+  else {
+    let activeFileIndex = !isUndefined(options.category) ? findLastIndex(options.files, { CATEGORY: options.category }) : (options.files.length - 1)
+
+    if (activeFileIndex > -1 && !isUndefined(commandOptions.fileSize) && isNumber(commandOptions.fileSize) && (options.files[activeFileIndex].BYTES + Buffer.from(csvOutput).length) > (commandOptions.fileSize * 1024 * 1024)) {
+      const activeFileObject = options.files[activeFileIndex]
+
+      if (activeFileObject.stream?.writableNeedDrain) {
+        activeFileObject.stream.once('drain', () => {
+          activeFileObject!.stream!.close()
+        })
+      }
+      else {
+        activeFileObject.stream!.close()
+      }
+
+      const FILENUM = activeFileObject.FILENUM! + 1
+
+      const outputFilePath = format({
+        ...options.parsedOutputFile,
+        name: createCsvFileName(options, FILENUM),
+      })
+
+      const stream = createWriteStream(outputFilePath, 'utf-8')
+
+      const newActiveFileObject = {
+        BYTES: 0,
+        FILENUM,
+        ROWS: 0,
+        PATH: outputFilePath,
+        CATEGORY: options.category,
+        FILTER: commandOptions.rowFilters,
+        stream,
+      }
+
+      options.files.push(newActiveFileObject)
+      activeFileIndex = options.files.length - 1
+      writeToActiveStream(activeFileObject.PATH, csvOutput, options)
+    }
+    else {
+      writeToActiveStream(options.files[activeFileIndex].PATH, csvOutput, options)
+    }
+  }
 }
