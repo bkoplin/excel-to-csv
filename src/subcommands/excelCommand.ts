@@ -40,6 +40,7 @@ import {
   createCsvFileName,
   generateCommandLineString,
   generateParsedCsvFilePath,
+  streamToFile,
   stringifyCommandOptions,
   tryPrompt,
 } from '../helpers'
@@ -235,7 +236,13 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     }, options.fileSize ? 1 : undefined),
   })
 
-  const writeStream = createWriteStream(outputFilePath, 'utf-8')
+  const stringifyStream = stringify({
+    bom: true,
+    columns: options.rangeIncludesHeader ? fields : undefined,
+    header: options.writeHeader,
+  })
+
+  const writeStream = streamToFile(stringifyStream, outputFilePath)
 
   files.push({
     BYTES: 0,
@@ -246,13 +253,6 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     PATH: outputFilePath,
     stream: writeStream,
   })
-
-  const stringifyStream = stringify({
-    bom: true,
-    columns: options.rangeIncludesHeader ? fields : undefined,
-    header: options.writeHeader,
-  })
-
   stringifyStream.on('data', (data) => {
     files[files.length - 1].BYTES += Buffer.from(data).length
     files[files.length - 1].ROWS += 1

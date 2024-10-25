@@ -1,6 +1,10 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { ParsedPath } from 'node:path'
 import type {
+  Stream,
+  Writable,
+} from 'node:stream'
+import type {
   ConditionalPick,
   EmptyObject,
   Get,
@@ -302,7 +306,7 @@ export async function selectGroupingField(groupingOptions: (string | Prompts.Sep
     }
   }
 }
-export function applyFilters(options: CombinedProgramOptions): boolean {
+export function applyFilters(options: Pick<CombinedProgramOptions, 'rowFilters' | 'matchType'>): boolean {
   return (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
     const filterCriteria = options.rowFilters
 
@@ -358,4 +362,16 @@ export function stringifyCommandOptions(options, commandLineString: string): str
     'ALL OPTIONS': options,
     'COMMAND': commandLineString,
   }, { lineWidth: 1000 })
+}
+export function streamToFile<T extends Stream>(inputStream: T, filePath: string, callbacks: Array<Parameters<Writable['on']>>): Writable {
+  const fileWriteStream = fs.createWriteStream(filePath, 'utf-8')
+
+  const pipeline = inputStream
+    .pipe(fileWriteStream)
+
+  for (const [event, callback] of callbacks) {
+    pipeline.on(event, callback)
+  }
+
+  return pipeline
 }

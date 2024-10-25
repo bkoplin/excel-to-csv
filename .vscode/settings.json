@@ -48,5 +48,6 @@
   "explorerExclude.backup": {},
   "eslint.codeActionsOnSave.mode": "all",
   "editor.wordWrap": "on",
-  "typescript.tsdk": "node_modules/typescript/lib"
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "svg.preview.background": "transparent"
 }
