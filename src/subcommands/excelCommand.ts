@@ -19,6 +19,7 @@ import {
   isString,
   isUndefined,
 } from 'lodash-es'
+import numbro from 'numbro'
 import ora, { oraPromise } from 'ora'
 import {
   format,
@@ -212,19 +213,6 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
   let headerline: string
 
-  const stringifyStream = stringify({
-    bom: true,
-    columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
-    header: options.rangeIncludesHeader,
-  })
-
-  stringifyStream.on('data', (line) => {
-    if (typeof headerline === 'undefined' && line.length && options.rangeIncludesHeader === true) {
-      headerline = line.toString()
-    }
-    console.log(line.toString())
-  })
-
   const filterStream = transform((inputValues: JsonPrimitive[]) => {
     const values = inputValues.map(v => isString(v) ? v.trim() : v)
 
@@ -259,20 +247,99 @@ export async function excelCommandAction(this: typeof excelCommamd) {
         }, typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined),
       })
 
-      files.push({
+      const stringifyStream = stringify({
+        bom: true,
+        columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
+        header: options.rangeIncludesHeader,
+      })
+
+      const destinationStream = fs.createWriteStream(outputFilePath, 'utf-8')
+
+      const fileObject = {
         BYTES: 0,
         FILENUM: 1,
         ROWS: 0,
         CATEGORY: rowGroup,
         FILTER: options.rowFilters,
         PATH: outputFilePath,
+        stream: destinationStream,
+      }
+
+      files.push(fileObject)
+      spinner.info(chalk.magentaBright(`CREATED "${basename(outputFilePath)}"`))
+      stringifyStream.on('unpipe', (src) => {
+        stringifyStream.unpipe(destinationStream)
       })
+      // destinationStream.on('unpipe', () => {
+      //   if (destinationStream.writableNeedDrain) {
+      //     destinationStream.once('drain', () => {
+      //       destinationStream.close()
+      //     })
+      //   }
+      //   else {
+      //     destinationStream.close()
+      //   }
+      // })
+      destinationStream.on('unpipe', () => {
+        // destinationStream.on('finish', () => {
+        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
+
+        const formattedBytes = numbro(files[fileIndex].BYTES).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'binary',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
+        })
+
+        const formattedLineCount = numbro(files[fileIndex].ROWS).format({ thousandSeparated: true })
+
+        spinner.info(chalk.magentaBright(`WROTE ${formattedBytes} BYTES; `) + chalk.greenBright(`WROTE ${formattedLineCount} LINES; `) + chalk.yellow(`FINISHED WITH "${basename(outputFilePath)}"`))
+        // })
+      })
+      stringifyStream.on('data', (line) => {
+        // let line: Buffer | null
+
+        // while ((line = stringifyStream.read()) !== null) {
+        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
+
+        const maxFileSize = typeof options.fileSize === 'number' && options.fileSize > 0 ? options.fileSize * 1024 * 1024 : undefined
+
+        const potentialSize = files[fileIndex].BYTES + Buffer.from(line).length
+
+        if (typeof maxFileSize === 'undefined' || potentialSize <= maxFileSize) {
+          files[fileIndex].BYTES = potentialSize
+          files[fileIndex].ROWS += 1
+          destinationStream.write(line)
+          // if (!writeResult) {
+          //   destinationStream.once('drain', () => {
+          //     destinationStream.close()
+          //   })
+          // }
+          // else {
+          //   destinationStream.close()
+          // }
+        }
+        else {
+          if (destinationStream.writableNeedDrain) {
+            destinationStream.once('drain', () => {
+              fileUpdateStream.unpipe()
+            })
+          }
+          else {
+            fileUpdateStream.unpipe()
+          }
+        }
+        // }
+      })
+      fileUpdateStream.pipe(stringifyStream).pipe(destinationStream)
     }
+    // else {
+    // }
 
     return row
   })
-
-  filterStream.pipe(fileUpdateStream).pipe(stringifyStream)
 
   const commandLineString = generateCommandLineString(options, this)
 
@@ -285,6 +352,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   for (const row of data) {
     filterStream.write(row)
   }
+  filterStream.pipe(fileUpdateStream)
 }
 function writeCsvOutput(options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>

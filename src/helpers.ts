@@ -1,4 +1,5 @@
 import type { Command } from '@commander-js/extra-typings'
+import type { Stringifier } from 'csv-stringify'
 import type { ParsedPath } from 'node:path'
 import type { Readable } from 'node:stream'
 import type {
@@ -396,18 +397,35 @@ export function stringifyCommandOptions(options: CombinedProgramOptions, command
 }
 
 // type Events = 'close' | 'drain' | 'error' | 'finish' | 'open' | 'pipe' | 'ready' | 'unpipe'
+// interface Listeners<T> {
+//   close?: (fn: () => void) => this
+//   drain?: (fn: () => void) => this
+//   error?: (fn: (err: Error) => void) => this
+//   finish?: (fn: () => void) => this
+//   open?: (fn: (fd: number) => void) => this
+//   pipe?: (fn: (src: T) => void) => this
+//   ready?: (fn: () => void) => this
+//   unpipe?: (fn: (src: T) => void) => this
+//   data?: (fn: (chunk: Buffer) => void) => this
+//   cork?: (fn: () => void) => this
+//   uncork?: (fn: () => void) => this
+// }
+
 interface Listeners {
-  close?: (fn: () => void) => this
-  drain?: (fn: () => void) => this
-  error?: (fn: (err: Error) => void) => this
-  finish?: (fn: () => void) => this
-  open?: (fn: (fd: number) => void) => this
-  pipe?: (fn: (src: Readable) => void) => this
-  ready?: (fn: () => void) => this
-  unpipe?: (fn: (src: Readable) => void) => this
+  close?: () => void
+  data?: (chunk: Buffer) => void
+  drain?: () => void
+  end?: () => void
+  error?: (err: Error) => void
+  finish?: () => void
+  pause?: () => void
+  pipe?: (src: Readable) => void
+  readable?: () => void
+  resume?: () => void
+  unpipe?: (src: Readable) => void
 }
 
-export function streamToFile(inputStream: Readable, filePath: string, callbacks: {
+export function streamToFile(inputStream: Stringifier, filePath: string, callbacks: {
   on?: Listeners
   once?: Listeners
 }): fs.WriteStream {
