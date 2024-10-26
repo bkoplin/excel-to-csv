@@ -1,9 +1,6 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { ParsedPath } from 'node:path'
-import type {
-  Stream,
-  Writable,
-} from 'node:stream'
+import type { Readable } from 'node:stream'
 import type {
   ConditionalPick,
   EmptyObject,
@@ -54,14 +51,18 @@ import {
 } from 'pathe'
 import {
   get,
-  isEmpty,
   objectify,
   omit,
+  shake,
   tryit,
+
 } from 'radash'
+import isNumeric from 'validator/lib/isNumeric'
 import yaml from 'yaml'
 import pkg from '../package.json'
+
 /* async_RS reads a stream and returns a Promise resolving to a workbook */
+const spinner = ora({ discardStdin: false })
 
 export async function checkAndResolveFilePath(options: {
   fileType: 'Excel' | 'CSV'
@@ -70,7 +71,7 @@ export async function checkAndResolveFilePath(options: {
   let argFilePath = options.argFilePath
 
   if (typeof argFilePath === 'undefined' || isEmpty(argFilePath)) {
-    ora().warn(colors.magentaBright(`You have not provided an input ${options.fileType} file.`))
+    spinner.warn(colors.magentaBright(`You have not provided an input ${options.fileType} file.`))
 
     const startingFolder = await selectStartingFolder(options.fileType)
 
@@ -94,7 +95,7 @@ export async function checkAndResolveFilePath(options: {
       argFilePath = pathFromHome
     }
     else {
-      ora().warn(colors.magentaBright(`Could not find ${options.fileType === 'CSV' ? 'a CSV or' : 'an Excel'} file at the path ${colors.cyanBright(`"${options.argFilePath}"`)}!`))
+      spinner.warn(colors.magentaBright(`Could not find ${options.fileType === 'CSV' ? 'a CSV or' : 'an Excel'} file at the path ${colors.cyanBright(`"${options.argFilePath}"`)}!`))
 
       const startingFolder = await selectStartingFolder(options.fileType)
 
@@ -209,10 +210,16 @@ export function generateCommandLineString(combinedOptions: CombinedProgramOption
         if (!isEmptyObject(value)) {
           for (const [k, v] of objectEntries(value)) {
             if (isArray(v)) {
-              for (const val of v) acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${val}`)} `
+              for (const val of v) {
+                const valueToString = stringifyCliValue(val, k)
+
+                acc += ` \\\n${optionFlags[key]} ${stringifyValue(valueToString)} `
+              }
             }
             else {
-              acc += ` \\\n${optionFlags[key]} ${stringifyValue(`${k}:${v}`)} `
+              const valueToString = stringifyCliValue(v, k)
+
+              acc += ` \\\n${optionFlags[key]} ${stringifyValue(valueToString)} `
             }
           }
         }
@@ -224,6 +231,23 @@ export function generateCommandLineString(combinedOptions: CombinedProgramOption
 
     return acc
   }, `${pkg.name} ${command._name!}`)
+}
+function stringifyCliValue(val: any, k: string): string {
+  const valIsRegexp = val instanceof RegExp
+
+  const keyIsNumber = isNumeric(`${k}`)
+
+  let valueToString = ''
+
+  if (!keyIsNumber)
+    valueToString += `${k}:`
+
+  valueToString += val
+
+  if (valIsRegexp)
+    valueToString += `:R`
+
+  return valueToString
 }
 export function stringifyValue(val: any): any {
   const nonAlphaNumericPattern = createRegExp(anyOf(whitespace, linefeed, carriageReturn, '|', '\\', '/'))
@@ -283,10 +307,14 @@ type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
 
 type PromptKeys = StringKeyOf<PromptsType>
 
-export async function tryPrompt<T extends PromptKeys, Value>(type: T, opts: Parameters<Get<PromptsType, typeof type>>[0], timeout = 5000): Promise<ReturnType<Get<PromptsType, T>> extends Promise<any> ? Promise<[Error, undefined] | [undefined, Awaited<Promise<any> & ReturnType<Get<PromptsType, T>>>]> : [Error, undefined] | [undefined, ReturnType<Get<PromptsType, T>>]> {
-  return tryit<typeof opts, ReturnType<Get<PromptsType, typeof type>>>(o => Prompts[type]<Value>(o, { signal: AbortSignal.timeout(timeout) }))(opts)
+export async function tryPrompt<T extends PromptKeys>(type: T, opts: Parameters<Get<PromptsType, T>>[0], timeout?: number): Promise<[Error, undefined] | [undefined, ReturnType<Get<PromptsType, T>>]> {
+  if (typeof timeout === 'undefined') {
+    return tryit(() => Prompts[type](opts))()
+  }
+
+  return tryit(() => Prompts[type](opts, { signal: AbortSignal.timeout(timeout) }))()
 }
-export async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[]) {
+export async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[]): Promise<string | undefined> {
   const [, confirmCategory] = await tryit(Prompts.confirm)({
     message: 'Would you like to select a field to split the file into separate files?',
     default: false,
@@ -306,7 +334,10 @@ export async function selectGroupingField(groupingOptions: (string | Prompts.Sep
     }
   }
 }
-export function applyFilters(options: Pick<CombinedProgramOptions, 'rowFilters' | 'matchType'>): boolean {
+export function applyFilters(options: {
+  matchType: 'any' | 'all' | 'none'
+  rowFilters: EmptyObject | Record<string, (RegExp | JsonPrimitive)[]>
+}): (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => boolean {
   return (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
     const filterCriteria = options.rowFilters
 
@@ -357,21 +388,44 @@ export function applyFilters(options: Pick<CombinedProgramOptions, 'rowFilters' 
     }
   }
 }
-export function stringifyCommandOptions(options, commandLineString: string): string {
+export function stringifyCommandOptions(options: CombinedProgramOptions, commandLineString: string): string {
   return yaml.stringify({
-    'ALL OPTIONS': options,
+    'ALL OPTIONS': shake(options),
     'COMMAND': commandLineString,
   }, { lineWidth: 1000 })
 }
-export function streamToFile<T extends Stream>(inputStream: T, filePath: string, callbacks: Array<Parameters<Writable['on']>>): Writable {
+
+// type Events = 'close' | 'drain' | 'error' | 'finish' | 'open' | 'pipe' | 'ready' | 'unpipe'
+interface Listeners {
+  close?: (fn: () => void) => this
+  drain?: (fn: () => void) => this
+  error?: (fn: (err: Error) => void) => this
+  finish?: (fn: () => void) => this
+  open?: (fn: (fd: number) => void) => this
+  pipe?: (fn: (src: Readable) => void) => this
+  ready?: (fn: () => void) => this
+  unpipe?: (fn: (src: Readable) => void) => this
+}
+
+export function streamToFile(inputStream: Readable, filePath: string, callbacks: {
+  on?: Listeners
+  once?: Listeners
+}): fs.WriteStream {
   const fileWriteStream = fs.createWriteStream(filePath, 'utf-8')
 
   const pipeline = inputStream
     .pipe(fileWriteStream)
 
-  for (const [event, callback] of callbacks) {
-    pipeline.on(event, callback)
+  if ('on' in callbacks) {
+    for (const event in callbacks.on) {
+      pipeline.on(event, callbacks.on[event])
+    }
+  }
+  if ('once' in callbacks) {
+    for (const event in callbacks.once) {
+      pipeline.on(event, callbacks.once[event])
+    }
   }
 
-  return pipeline
+  return fileWriteStream
 }

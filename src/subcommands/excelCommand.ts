@@ -12,6 +12,8 @@ import chalk from 'chalk'
 import { stringify } from 'csv'
 import fs from 'fs-extra'
 import {
+  concat,
+  isEmpty,
   isNil,
   isUndefined,
 } from 'lodash-es'
@@ -22,7 +24,10 @@ import {
   parse,
 } from 'pathe'
 import { filename } from 'pathe/utils'
-import { zipToObject } from 'radash'
+import {
+  get,
+  zipToObject,
+} from 'radash'
 import { transform } from 'stream-transform'
 import {
   compareAndLogRanges,
@@ -40,7 +45,6 @@ import {
   createCsvFileName,
   generateCommandLineString,
   generateParsedCsvFilePath,
-  streamToFile,
   stringifyCommandOptions,
   tryPrompt,
 } from '../helpers'
@@ -80,8 +84,6 @@ export const excelCommamd = new Command('excel')
 export async function excelCommandAction(this: typeof excelCommamd) {
   const options = this.opts()
 
-  const dataStream = transform(data => data)
-
   // dataStream.on('readable', () => {
   //   const d = dataStream.read()
 
@@ -94,7 +96,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   })
 
   if (newFilePath !== options.filePath) {
-    this.setOptionValueWithSource('filePath', newFilePath, 'env')
+    this.setOptionValueWithSource('filePath', newFilePath, 'cli')
   }
 
   const {
@@ -115,7 +117,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   this.setOptionValueWithSource('bytesRead', bytesRead, 'default')
   if (typeof options.sheetName !== 'string' || !wb.SheetNames.includes(options.sheetName)) {
     options.sheetName = await setSheetName(wb)
-    this.setOptionValueWithSource('sheet', options.sheetName, 'env')
+    this.setOptionValueWithSource('sheetName', options.sheetName, 'cli')
   }
 
   const parsedOutputFile = generateParsedCsvFilePath({
@@ -134,7 +136,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   if (!isOverlappingRange(ws, options.sheetRange)) {
     const selectedRange = await setRange(wb, options.sheetName)
 
-    this.setOptionValueWithSource('sheetRange', selectedRange, 'env')
+    this.setOptionValueWithSource('sheetRange', selectedRange, 'cli')
     options.sheetRange = selectedRange
 
     const {
@@ -147,46 +149,55 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   }
   if (isUndefined(options.rangeIncludesHeader)) {
     options.rangeIncludesHeader = await setRangeIncludesHeader(options.sheetRange, options.rangeIncludesHeader)
-    this.setOptionValueWithSource('rangeIncludesHeader', options.rangeIncludesHeader, 'env')
+    this.setOptionValueWithSource('rangeIncludesHeader', options.rangeIncludesHeader, 'cli')
   }
   if (options.rangeIncludesHeader === false && options.writeHeader === true) {
     options.writeHeader = false
-    this.setOptionValueWithSource('writeHeader', false, 'env')
+    this.setOptionValueWithSource('writeHeader', false, 'cli')
   }
 
   const { parsedRange } = extractRangeInfo(ws, options.sheetRange)
 
   const [fields, ...data] = extractDataFromWorksheet(parsedRange, ws)
 
+  const rowMetaData = [basename(options.filePath), options.sheetName, options.sheetRange]
+
   const firstRowHasNilValue = fields.some(f => isNil(f))
 
-  if (!this.opts().categoryField) {
-    let newCategory: string
+  const categoryOption = get(options, 'categoryField', [])
 
+  if (isEmpty(categoryOption)) {
     const [, confirmCategory] = await tryPrompt('confirm', {
-      message: 'Would you like to select a field to split the file into separate files?',
+      message: 'Would you like to select a one or more fields to split the file into separate files?',
       default: false,
-    }, { signal: AbortSignal.timeout(7500) })
+    })
 
     if (confirmCategory === true) {
       if (options.rangeIncludesHeader === true && !firstRowHasNilValue) {
-        newCategory = await tryPrompt('select', {
+        const [,newCategory] = await tryPrompt('checkbox', {
           message: `Select a column to group rows from input file by...`,
-          choices: [...(fields as string[]).sort(), new Prompts.Separator()],
+          choices: [...fields as string[], new Prompts.Separator()],
           loop: true,
+          pageSize: fields.length > 15 ? 15 : 7,
         })
+
+        if (typeof newCategory !== 'undefined') {
+          options.categoryField = newCategory
+          this.setOptionValueWithSource('categoryField', newCategory, 'cli')
+        }
       }
       else {
-        newCategory = await tryPrompt('number', {
+        const [,newCategory] = await tryPrompt('number', {
           min: 1,
           max: fields.length,
           message: 'Select a column number to group by',
           default: undefined,
         }) as unknown as string
-      }
-      if (typeof newCategory === 'string' && newCategory.length) {
-        options.categoryField = newCategory
-        this.setOptionValueWithSource('categoryField', newCategory, 'env')
+
+        if (typeof newCategory !== 'undefined') {
+          options.categoryField = [newCategory]
+          this.setOptionValueWithSource('categoryField', [newCategory], 'cli')
+        }
       }
     }
   }
@@ -195,34 +206,45 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     await timers.setTimeout(2500)
   }
 
+  const stringifyStream = stringify({
+    bom: true,
+    columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
+    header: options.writeHeader,
+  })
+
+  stringifyStream.on('data', (data) => {
+
+  })
+
+  const filterStream = transform((values: JsonPrimitive[]) => {
+    if (get(options, 'rangeIncludesHeader') === true) {
+      const dataObject = zipToObject(concat(fields, ['source_file', 'source_sheet', 'source_range']), concat(values, rowMetaData))
+
+      if (applyFilters(options)(dataObject))
+        return dataObject
+      else return null
+    }
+    else {
+      const dataObject = concat(values, rowMetaData)
+
+      if (applyFilters(options)(dataObject))
+        return values
+      else return null
+    }
+  })
+
+  filterStream.pipe(stringifyStream)
+
   const commandLineString = generateCommandLineString(options, this)
 
   fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), stringifyCommandOptions(options, commandLineString))
   parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
   fs.ensureDirSync(parsedOutputFile.dir)
-
-  const finalData: Array<Record<string, JsonPrimitive>> | Array<JsonPrimitive[]> = []
-
-  if (options.rangeIncludesHeader === true) {
-    for (const values of data) {
-      const dataObject = {
-        ...zipToObject(fields as string[], values),
-        source_file: basename(options.filePath),
-        source_sheet: options.sheetName,
-        source_range: options.sheetRange,
-      }
-
-      if (applyFilters(options)(dataObject)) {
-        dataStream.write(dataObject)
-      }
-    }
+  if (options.rangeIncludesHeader !== true) {
+    filterStream.write(fields)
   }
-  else {
-    for (const dataObject of [[...fields, 'source_file', 'source_sheet', 'source_range'], ...data.map(v => [...v, basename(options.filePath), options.sheetName, options.sheetRange])]) {
-      if (applyFilters(options)(dataObject)) {
-        dataStream.write(dataObject)
-      }
-    }
+  for (const row of data) {
+    filterStream.write(row)
   }
 
   const files: FileMetrics[] = []
@@ -236,14 +258,6 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     }, options.fileSize ? 1 : undefined),
   })
 
-  const stringifyStream = stringify({
-    bom: true,
-    columns: options.rangeIncludesHeader ? fields : undefined,
-    header: options.writeHeader,
-  })
-
-  const writeStream = streamToFile(stringifyStream, outputFilePath)
-
   files.push({
     BYTES: 0,
     FILENUM: 1,
@@ -251,18 +265,15 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     CATEGORY: options.categoryField,
     FILTER: options.rowFilters,
     PATH: outputFilePath,
-    stream: writeStream,
   })
   stringifyStream.on('data', (data) => {
     files[files.length - 1].BYTES += Buffer.from(data).length
     files[files.length - 1].ROWS += 1
-    files[files.length - 1].stream.write(data)
     // console.log({
     //   byteLength: data.length,
     //   string: data.toString(),
     // })
   })
-  dataStream.pipe(stringifyStream)
 }
 function writeCsvOutput(options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>
