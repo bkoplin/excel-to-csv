@@ -11,6 +11,7 @@ import chalk from 'chalk'
 import {
   isNil,
   isNull,
+  isString,
   isUndefined,
   range,
 } from 'lodash-es'
@@ -274,7 +275,7 @@ export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkS
         row.push(null)
       }
       else {
-        const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : cell.v
+        const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : isString(cell.v) ? cell.v.trim() : cell.v
 
         row.push(cellValue)
       }

@@ -12,9 +12,11 @@ import chalk from 'chalk'
 import { stringify } from 'csv'
 import fs from 'fs-extra'
 import {
+  at,
   concat,
   isEmpty,
   isNil,
+  isString,
   isUndefined,
 } from 'lodash-es'
 import ora, { oraPromise } from 'ora'
@@ -206,17 +208,26 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     await timers.setTimeout(2500)
   }
 
+  const files: FileMetrics[] = []
+
+  let headerline: string
+
   const stringifyStream = stringify({
     bom: true,
     columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
-    header: options.writeHeader,
+    header: options.rangeIncludesHeader,
   })
 
-  stringifyStream.on('data', (data) => {
-
+  stringifyStream.on('data', (line) => {
+    if (typeof headerline === 'undefined' && line.length && options.rangeIncludesHeader === true) {
+      headerline = line.toString()
+    }
+    console.log(line.toString())
   })
 
-  const filterStream = transform((values: JsonPrimitive[]) => {
+  const filterStream = transform((inputValues: JsonPrimitive[]) => {
+    const values = inputValues.map(v => isString(v) ? v.trim() : v)
+
     if (get(options, 'rangeIncludesHeader') === true) {
       const dataObject = zipToObject(concat(fields, ['source_file', 'source_sheet', 'source_range']), concat(values, rowMetaData))
 
@@ -233,7 +244,35 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     }
   })
 
-  filterStream.pipe(stringifyStream)
+  const fileUpdateStream = transform((row: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
+    const rowGroup = isEmpty(options.categoryField) ? 'default' : at(row, options.categoryField).join(' ')
+
+    const fileIndex = files.findIndex(f => f.CATEGORY === rowGroup)
+
+    if (fileIndex === -1) {
+      const outputFilePath = format({
+        ...parsedOutputFile,
+        name: createCsvFileName({
+          ...options,
+          parsedOutputFile,
+
+        }, typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined),
+      })
+
+      files.push({
+        BYTES: 0,
+        FILENUM: 1,
+        ROWS: 0,
+        CATEGORY: rowGroup,
+        FILTER: options.rowFilters,
+        PATH: outputFilePath,
+      })
+    }
+
+    return row
+  })
+
+  filterStream.pipe(fileUpdateStream).pipe(stringifyStream)
 
   const commandLineString = generateCommandLineString(options, this)
 
@@ -246,34 +285,6 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   for (const row of data) {
     filterStream.write(row)
   }
-
-  const files: FileMetrics[] = []
-
-  const outputFilePath = format({
-    ...parsedOutputFile,
-    name: createCsvFileName({
-      ...options,
-      parsedOutputFile,
-
-    }, options.fileSize ? 1 : undefined),
-  })
-
-  files.push({
-    BYTES: 0,
-    FILENUM: 1,
-    ROWS: 0,
-    CATEGORY: options.categoryField,
-    FILTER: options.rowFilters,
-    PATH: outputFilePath,
-  })
-  stringifyStream.on('data', (data) => {
-    files[files.length - 1].BYTES += Buffer.from(data).length
-    files[files.length - 1].ROWS += 1
-    // console.log({
-    //   byteLength: data.length,
-    //   string: data.toString(),
-    // })
-  })
 }
 function writeCsvOutput(options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>
