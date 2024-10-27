@@ -255,32 +255,34 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
       const destinationStream = fs.createWriteStream(outputFilePath, 'utf-8')
 
-      const fileObject = {
-        BYTES: 0,
-        FILENUM: 1,
-        ROWS: 0,
-        CATEGORY: rowGroup,
-        FILTER: options.rowFilters,
-        PATH: outputFilePath,
-        stream: destinationStream,
-      }
+      stringifyStream.on('data', async (line) => {
+        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
 
-      files.push(fileObject)
-      spinner.info(chalk.magentaBright(`CREATED "${basename(outputFilePath)}"`))
-      stringifyStream.on('unpipe', (src) => {
-        stringifyStream.unpipe(destinationStream)
+        const maxFileSize = typeof options.fileSize === 'number' && options.fileSize > 0 ? options.fileSize * 1024 * 1024 : undefined
+
+        const potentialSize = files[fileIndex].BYTES + Buffer.from(line).length
+
+        files[fileIndex].BYTES = potentialSize
+        files[fileIndex].ROWS += 1
+        if (!destinationStream.write(line)) {
+          destinationStream.once('drain', () => {
+            if (typeof maxFileSize === 'number' && potentialSize > maxFileSize) {
+              destinationStream.close()
+            }
+          })
+        }
+        else {
+          if (typeof maxFileSize === 'number' && potentialSize > maxFileSize) {
+            destinationStream.close()
+          }
+        }
+        // else {
+        //   files[fileIndex].BYTES = potentialSize
+        //   files[fileIndex].ROWS += 1
+        //   destinationStream.end(line)
+        // }
       })
-      // destinationStream.on('unpipe', () => {
-      //   if (destinationStream.writableNeedDrain) {
-      //     destinationStream.once('drain', () => {
-      //       destinationStream.close()
-      //     })
-      //   }
-      //   else {
-      //     destinationStream.close()
-      //   }
-      // })
-      destinationStream.on('unpipe', () => {
+      destinationStream.on('close', () => {
         // destinationStream.on('finish', () => {
         const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
 
@@ -298,42 +300,32 @@ export async function excelCommandAction(this: typeof excelCommamd) {
         spinner.info(chalk.magentaBright(`WROTE ${formattedBytes} BYTES; `) + chalk.greenBright(`WROTE ${formattedLineCount} LINES; `) + chalk.yellow(`FINISHED WITH "${basename(outputFilePath)}"`))
         // })
       })
-      stringifyStream.on('data', (line) => {
-        // let line: Buffer | null
+      spinner.info(chalk.magentaBright(`CREATED "${basename(outputFilePath)}"`))
 
-        // while ((line = stringifyStream.read()) !== null) {
-        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
+      const fileObject = {
+        BYTES: 0,
+        FILENUM: 1,
+        ROWS: 0,
+        CATEGORY: rowGroup,
+        FILTER: options.rowFilters,
+        PATH: outputFilePath,
+        stream: stringifyStream,
+      }
 
-        const maxFileSize = typeof options.fileSize === 'number' && options.fileSize > 0 ? options.fileSize * 1024 * 1024 : undefined
+      files.push(fileObject)
+      stringifyStream.write(row)
+    }
+    else {
+      const fileObject = files[fileIndex]
 
-        const potentialSize = files[fileIndex].BYTES + Buffer.from(line).length
-
-        if (typeof maxFileSize === 'undefined' || potentialSize <= maxFileSize) {
-          files[fileIndex].BYTES = potentialSize
-          files[fileIndex].ROWS += 1
-          destinationStream.write(line)
-          // if (!writeResult) {
-          //   destinationStream.once('drain', () => {
-          //     destinationStream.close()
-          //   })
-          // }
-          // else {
-          //   destinationStream.close()
-          // }
-        }
-        else {
-          if (destinationStream.writableNeedDrain) {
-            destinationStream.once('drain', () => {
-              fileUpdateStream.unpipe()
-            })
-          }
-          else {
-            fileUpdateStream.unpipe()
-          }
-        }
-        // }
-      })
-      fileUpdateStream.pipe(stringifyStream).pipe(destinationStream)
+      if (fileObject.stream?.writableNeedDrain) {
+        fileObject.stream.once('drain', () => {
+          fileObject.stream!.write(row)
+        })
+      }
+      else {
+        fileObject.stream!.write(row)
+      }
     }
     // else {
     // }
