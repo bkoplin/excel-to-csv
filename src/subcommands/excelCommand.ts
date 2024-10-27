@@ -1,4 +1,3 @@
-import type { Stringifier } from 'csv'
 import type { Stringifier } from 'csv-stringify'
 import type {
   JsonPrimitive,
@@ -19,6 +18,7 @@ import {
 import * as Prompts from '@inquirer/prompts'
 import chalk from 'chalk'
 import { stringify } from 'csv'
+import filenamify from 'filenamify'
 import fs from 'fs-extra'
 import {
   at,
@@ -252,19 +252,13 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     },
   })
 
-  const stringifier = stringify({
-    bom: true,
-    columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
-    header: options.rangeIncludesHeader,
-  })
-
-  type RowSet = Array<Simplify<{
+  type RowSet = Simplify<{
     dataArray: Array<Record<string, JsonPrimitive>>
     lines: Array<Buffer>
     fileName: string
     stringifier: Stringifier
     fileNumber: number
-  } & Partial<FileMetrics>>>
+  } & FileMetrics>
 
   const commandLineString = generateCommandLineString(options, this)
 
@@ -272,23 +266,24 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
   fs.ensureDirSync(parsedOutputFile.dir)
 
-  const inputDataStream = Readable.from(allSourceData)
+  const inputDataStream = await Readable.from(allSourceData)
     .map((chunk: JsonPrimitive): Record<string, JsonPrimitive> => {
       const values = chunk.map(v => isString(v) ? v.trim() : v)
 
       return zipToObject(concat(fields, ['source_file', 'source_sheet', 'source_range']), concat(values, rowMetaData))
     }, { concurrency: 20 })
     .filter<Record<string, JsonPrimitive>>(d => applyFilters(options)(d), { concurrency: 20 })
-    .reduce((acc: RowSet, chunk: Record<string, JsonPrimitive>) => {
+    .reduce((acc: RowSet[], chunk: Record<string, JsonPrimitive>) => {
       const CATEGORY = isEmpty(options.categoryField) ? 'default' : at(chunk, options.categoryField).join(' ')
 
       const fileNumber = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
-      const fileName = createCsvFileName({
-        parsedOutputFile,
-        category: CATEGORY,
-      }, fileNumber)
+      let fileName = parsedOutputFile.name
 
+      if (typeof CATEGORY !== 'undefined' && CATEGORY !== null)
+        fileName += ` ${CATEGORY}`
+
+      fileName = filenamify(fileName, { replacement: '_' })
       if (!find(acc, { CATEGORY })) {
         acc.push({
           dataArray: [chunk],
@@ -297,43 +292,43 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           ROWS: 0,
           FILENUM: fileNumber,
           fileName,
+          FILTER: options.rowFilters,
           lines: [],
-          stringifier: stringify([chunk], {
-            bom: true,
-            columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
-            header: options.rangeIncludesHeader,
-          }),
+          // stringifier,
         })
       }
       else {
         acc[findIndex(acc, { CATEGORY })].dataArray.push(chunk)
-        acc[findIndex(acc, { CATEGORY })].stringifier.write(chunk)
+        // acc[findIndex(acc, { CATEGORY })].stringifier.write(chunk)
       }
 
       return acc
-    }, [] as RowSet)
+    }, [] as RowSet[])
 
-  for (const rowSet of await inputDataStream) {
-    for await (const row of rowSet.stringifier) {
-      if (typeof options.fileSize === 'number' && rowSet.BYTES + row.length > options.fileSize * 1024 * 1024) {
-        const outputFilePath = format({
-          dir: parsedOutputFile.dir,
-          ext: '.csv',
-          name: rowSet.fileName,
-        })
+  for (const rowSet of inputDataStream) {
+    const stringifier = stringify(rowSet.dataArray, {
+      bom: true,
+      columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
+      header: options.rangeIncludesHeader,
+    })
 
-        const stream = createWriteStream(outputFilePath, 'utf-8')
+    if ((options.fileSize || 0) === 0) {
+      stringifier.pipe(createWriteStream(join(parsedOutputFile.dir, `${rowSet.fileName}.csv`)))
+    }
+    else {
+      for await (const row of stringifier) {
+        if (typeof options.fileSize === 'number' && (rowSet.BYTES + row.length) > options.fileSize * 1024 * 1024) {
+          files.push({
+            BYTES: 0,
+            CATEGORY: rowSet.CATEGORY,
+            FILENUM: rowSet.FILENUM,
+            ROWS: 0,
 
-        files.push({
-          BYTES: 0,
-          CATEGORY: rowSet.CATEGORY,
-          FILENUM: rowSet.FILENUM,
-          ROWS: 0,
-          stream,
-        })
-        rowSet.FILENUM!++
-        rowSet.BYTES = 0
-        rowSet.lines = []
+          })
+          rowSet.FILENUM!++
+          rowSet.BYTES = 0
+          rowSet.lines = []
+        }
       }
     }
   }
