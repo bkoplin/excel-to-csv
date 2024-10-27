@@ -2,6 +2,10 @@ import type { JsonPrimitive } from 'type-fest'
 import type { FileMetrics } from '../types'
 import { createWriteStream } from 'node:fs'
 import { basename } from 'node:path'
+import {
+  Readable,
+  Transform,
+} from 'node:stream'
 import timers from 'node:timers/promises'
 import {
   Command,
@@ -29,9 +33,9 @@ import {
 import { filename } from 'pathe/utils'
 import {
   get,
+  isArray,
   zipToObject,
 } from 'radash'
-import { transform } from 'stream-transform'
 import {
   compareAndLogRanges,
   extractDataFromWorksheet,
@@ -161,11 +165,24 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
   const { parsedRange } = extractRangeInfo(ws, options.sheetRange)
 
-  const [fields, ...data] = extractDataFromWorksheet(parsedRange, ws)
+  let fields: string[] = []
+
+  const allSourceData = extractDataFromWorksheet(parsedRange, ws)
+
+  const firstRowHasNilValue = isArray(allSourceData?.[0]) && allSourceData[0].some(f => isNil(f))
+
+  if (firstRowHasNilValue) {
+    spinner.warn(chalk.yellowBright(`The first row in the selected range contains null values; columns have been named "Column 1", "Column 2", etc.`))
+    await timers.setTimeout(2500)
+  }
+  if (options.rangeIncludesHeader && !firstRowHasNilValue) {
+    fields = allSourceData.shift()
+  }
+  else {
+    fields = allSourceData[0].map((_, i) => `Column ${i + 1}`)
+  }
 
   const rowMetaData = [basename(options.filePath), options.sheetName, options.sheetRange]
-
-  const firstRowHasNilValue = fields.some(f => isNil(f))
 
   const categoryOption = get(options, 'categoryField', [])
 
@@ -176,175 +193,132 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     })
 
     if (confirmCategory === true) {
-      if (options.rangeIncludesHeader === true && !firstRowHasNilValue) {
-        const [,newCategory] = await tryPrompt('checkbox', {
-          message: `Select a column to group rows from input file by...`,
-          choices: [...fields as string[], new Prompts.Separator()],
-          loop: true,
-          pageSize: fields.length > 15 ? 15 : 7,
-        })
+      // if (options.rangeIncludesHeader === true && !firstRowHasNilValue) {
+      const [,newCategory] = await tryPrompt('checkbox', {
+        message: `Select a column to group rows from input file by...`,
+        choices: [...fields.map(value => ({
+          name: value,
+          value,
+        })), new Prompts.Separator()],
+        loop: true,
+        pageSize: fields.length > 15 ? 15 : 7,
+      })
 
-        if (typeof newCategory !== 'undefined') {
-          options.categoryField = newCategory
-          this.setOptionValueWithSource('categoryField', newCategory, 'cli')
-        }
+      if (typeof newCategory !== 'undefined') {
+        options.categoryField = newCategory
+        this.setOptionValueWithSource('categoryField', newCategory, 'cli')
       }
-      else {
-        const [,newCategory] = await tryPrompt('number', {
-          min: 1,
-          max: fields.length,
-          message: 'Select a column number to group by',
-          default: undefined,
-        }) as unknown as string
+      // }
+      // else {
+      //   const [, newCategory] = await tryPrompt('number', {
+      //     min: 1,
+      //     max: fields.length,
+      //     message: 'Select the 1-indexed column number to group by',
+      //     default: undefined,
+      //   })
 
-        if (typeof newCategory !== 'undefined') {
-          options.categoryField = [newCategory]
-          this.setOptionValueWithSource('categoryField', [newCategory], 'cli')
-        }
-      }
+      //   if (typeof newCategory !== 'undefined') {
+      //     options.categoryField = [`${newCategory - 1}`]
+      //     this.setOptionValueWithSource('categoryField', [`${newCategory - 1}`], 'cli')
+      //   }
+      // }
     }
   }
-  if (firstRowHasNilValue) {
-    spinner.warn(chalk.yellowBright(`The first row in the selected range contains null values; parsing and load may fail`))
-    await timers.setTimeout(2500)
-  }
+  // if (firstRowHasNilValue) {
+  //   spinner.warn(chalk.yellowBright(`The first row in the selected range contains null values; parsing and load may fail`))
+  //   await timers.setTimeout(2500)
+  // }
 
   const files: FileMetrics[] = []
 
-  let headerline: string
+  const makeDataObjects = new Transform({
+    objectMode: true,
+    transform(chunk: JsonPrimitive[], encoding, callback: (error?: Error | null, data?: Record<string, string | number | boolean | null>) => void) {
+      // (inputValues: JsonPrimitive[]) => {
+      const values = chunk.map(v => isString(v) ? v.trim() : v)
 
-  const filterStream = transform((inputValues: JsonPrimitive[]) => {
-    const values = inputValues.map(v => isString(v) ? v.trim() : v)
-
-    if (get(options, 'rangeIncludesHeader') === true) {
       const dataObject = zipToObject(concat(fields, ['source_file', 'source_sheet', 'source_range']), concat(values, rowMetaData))
 
       if (applyFilters(options)(dataObject))
-        return dataObject
-      else return null
-    }
-    else {
-      const dataObject = concat(values, rowMetaData)
-
-      if (applyFilters(options)(dataObject))
-        return values
-      else return null
-    }
+        callback(null, dataObject)
+        // }
+    },
   })
 
-  const fileUpdateStream = transform((row: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
-    const rowGroup = isEmpty(options.categoryField) ? 'default' : at(row, options.categoryField).join(' ')
+  const stringifier = stringify({
+    bom: true,
+    columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
+    header: options.rangeIncludesHeader,
+  })
 
-    const fileIndex = files.findIndex(f => f.CATEGORY === rowGroup)
+  const inputDataStream = Readable.from(allSourceData).pipe(makeDataObjects).pipe(stringifier)
+
+  let headerline: Buffer
+
+  for await (const row of stringifier) {
+    if (!headerline && files.length === 0 && (row as Buffer).length > 0) {
+      headerline = row
+    }
+
+    const CATEGORY = isEmpty(options.categoryField) ? 'default' : at(row, options.categoryField).join(' ')
+
+    const fileIndex = files.findIndex(f => f.CATEGORY === CATEGORY)
 
     if (fileIndex === -1) {
+      const fileNumber = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
+
+      const formattedFileName = createCsvFileName({
+        parsedOutputFile,
+        category: CATEGORY,
+      }, fileNumber)
+
       const outputFilePath = format({
-        ...parsedOutputFile,
-        name: createCsvFileName({
-          ...options,
-          parsedOutputFile,
-
-        }, typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined),
-      })
-
-      const stringifyStream = stringify({
-        bom: true,
-        columns: options.rangeIncludesHeader ? concat(fields, ['source_file', 'source_sheet', 'source_range']) : undefined,
-        header: options.rangeIncludesHeader,
+        dir: parsedOutputFile.dir,
+        ext: '.csv',
+        name: formattedFileName,
       })
 
       const destinationStream = fs.createWriteStream(outputFilePath, 'utf-8')
 
-      stringifyStream.on('data', async (line) => {
-        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
-
-        const maxFileSize = typeof options.fileSize === 'number' && options.fileSize > 0 ? options.fileSize * 1024 * 1024 : undefined
-
-        const potentialSize = files[fileIndex].BYTES + Buffer.from(line).length
-
-        files[fileIndex].BYTES = potentialSize
-        files[fileIndex].ROWS += 1
-        if (!destinationStream.write(line)) {
-          destinationStream.once('drain', () => {
-            if (typeof maxFileSize === 'number' && potentialSize > maxFileSize) {
-              destinationStream.close()
-            }
-          })
-        }
-        else {
-          if (typeof maxFileSize === 'number' && potentialSize > maxFileSize) {
-            destinationStream.close()
-          }
-        }
-        // else {
-        //   files[fileIndex].BYTES = potentialSize
-        //   files[fileIndex].ROWS += 1
-        //   destinationStream.end(line)
-        // }
-      })
-      destinationStream.on('close', () => {
-        // destinationStream.on('finish', () => {
-        const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
-
-        const formattedBytes = numbro(files[fileIndex].BYTES).format({
-          output: 'byte',
-          spaceSeparated: true,
-          base: 'binary',
-          average: true,
-          mantissa: 2,
-          optionalMantissa: true,
-        })
-
-        const formattedLineCount = numbro(files[fileIndex].ROWS).format({ thousandSeparated: true })
-
-        spinner.info(chalk.magentaBright(`WROTE ${formattedBytes} BYTES; `) + chalk.greenBright(`WROTE ${formattedLineCount} LINES; `) + chalk.yellow(`FINISHED WITH "${basename(outputFilePath)}"`))
-        // })
-      })
-      spinner.info(chalk.magentaBright(`CREATED "${basename(outputFilePath)}"`))
-
-      const fileObject = {
-        BYTES: 0,
-        FILENUM: 1,
-        ROWS: 0,
-        CATEGORY: rowGroup,
+      files.push({
+        BYTES: row.length,
+        CATEGORY,
+        FILENUM: fileNumber,
+        ROWS: 1,
+        stream: destinationStream,
         FILTER: options.rowFilters,
-        PATH: outputFilePath,
-        stream: stringifyStream,
-      }
+      })
 
-      files.push(fileObject)
-      stringifyStream.write(row)
+      // const fileIndex = files.findIndex(f => f.PATH === outputFilePath)
+
+      // const formattedBytes = numbro(files[fileIndex].BYTES).format({
+      //   output: 'byte',
+      //   spaceSeparated: true,
+      //   base: 'binary',
+      //   average: true,
+      //   mantissa: 2,
+      //   optionalMantissa: true,
+      // })
+
+      // const formattedLineCount = numbro(files[fileIndex].ROWS).format({ thousandSeparated: true })
+
+      // spinner.info(chalk.magentaBright(`WROTE ${formattedBytes} BYTES; `) + chalk.greenBright(`WROTE ${formattedLineCount} LINES; `) + chalk.yellow(`FINISHED WITH "${basename(outputFilePath)}"`))
+      spinner.info(chalk.magentaBright(`CREATED "${basename(outputFilePath)}"`))
     }
-    else {
-      const fileObject = files[fileIndex]
-
-      if (fileObject.stream?.writableNeedDrain) {
-        fileObject.stream.once('drain', () => {
-          fileObject.stream!.write(row)
-        })
-      }
-      else {
-        fileObject.stream!.write(row)
-      }
-    }
-    // else {
-    // }
-
-    return row
-  })
+  }
 
   const commandLineString = generateCommandLineString(options, this)
 
   fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), stringifyCommandOptions(options, commandLineString))
   parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
   fs.ensureDirSync(parsedOutputFile.dir)
-  if (options.rangeIncludesHeader !== true) {
-    filterStream.write(fields)
-  }
-  for (const row of data) {
-    filterStream.write(row)
-  }
-  filterStream.pipe(fileUpdateStream)
+  // if (options.rangeIncludesHeader !== true) {
+  //   filterStream.write(fields)
+  // }
+  // for (const row of data) {
+  //   filterStream.write(row)
+  // }
+  // filterStream.pipe(fileUpdateStream)
 }
 function writeCsvOutput(options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>

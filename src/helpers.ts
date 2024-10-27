@@ -3,9 +3,9 @@ import type { Stringifier } from 'csv-stringify'
 import type { ParsedPath } from 'node:path'
 import type { Readable } from 'node:stream'
 import type {
+  AsyncReturnType,
   ConditionalPick,
   EmptyObject,
-  Get,
   JsonPrimitive,
   StringKeyOf,
 } from 'type-fest'
@@ -308,12 +308,14 @@ type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
 
 type PromptKeys = StringKeyOf<PromptsType>
 
-export async function tryPrompt<T extends PromptKeys>(type: T, opts: Parameters<Get<PromptsType, T>>[0], timeout?: number): Promise<[Error, undefined] | [undefined, ReturnType<Get<PromptsType, T>>]> {
-  if (typeof timeout === 'undefined') {
-    return tryit(() => Prompts[type](opts))()
-  }
+export async function tryPrompt<T extends PromptKeys, N extends number>(type: T, config: Parameters<PromptsType[T]>[0], timeout?: N): N extends undefined ? Promise<[undefined, AsyncReturnType<PromptsType[T]>]> : Promise<[Error, undefined] | [undefined, AsyncReturnType<PromptsType[T]>]> {
+  return tryit(() => {
+    if (typeof timeout === 'undefined') {
+      return Prompts[type](config)
+    }
 
-  return tryit(() => Prompts[type](opts, { signal: AbortSignal.timeout(timeout) }))()
+    return Prompts[type](config, { signal: AbortSignal.timeout(timeout) })
+  })()
 }
 export async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[]): Promise<string | undefined> {
   const [, confirmCategory] = await tryit(Prompts.confirm)({
