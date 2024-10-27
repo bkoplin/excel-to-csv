@@ -337,11 +337,11 @@ export async function selectGroupingField(groupingOptions: (string | Prompts.Sep
     }
   }
 }
-export function applyFilters(options: {
+export function applyFilters<T>(options: {
   matchType: 'any' | 'all' | 'none'
   rowFilters: EmptyObject | Record<string, (RegExp | JsonPrimitive)[]>
-}): (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => boolean {
-  return (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => {
+}): (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => record is T {
+  return (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>): record is T => {
     const filterCriteria = options.rowFilters
 
     if (!('matchType' in options)) {
