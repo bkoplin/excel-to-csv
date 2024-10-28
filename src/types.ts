@@ -3,7 +3,6 @@ import type { ParsedPath } from 'pathe'
 import type {
   JsonPrimitive,
   Simplify,
-  TaggedUnion,
 } from 'type-fest'
 import type {
   _csvCommands,
@@ -43,7 +42,4 @@ export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & {
   bytesRead: number
 }>
 
-export type CombinedProgramOptions = TaggedUnion<'command', {
-  CSV: CSVOptionsWithGlobals
-  Excel: ExcelOptionsWithGlobals
-}>
+export type CombinedProgramOptions = CSVOptionsWithGlobals | ExcelOptionsWithGlobals

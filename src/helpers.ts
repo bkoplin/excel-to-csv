@@ -202,7 +202,7 @@ export function generateParsedCsvFilePath({
 
   return parsedOutputFile
 }
-export function generateCommandLineString(combinedOptions: CombinedProgramOptions, command: Command & { _name?: string }): string {
+export function generateCommandLineString(combinedOptions: Partial<CombinedProgramOptions>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
     const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as StringKeyOf<CombinedProgramOptions>, o => o.long as string)
 
