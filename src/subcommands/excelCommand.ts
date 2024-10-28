@@ -4,6 +4,7 @@ import type {
   Simplify,
 } from 'type-fest'
 import type { FileMetrics } from '../types'
+import { once } from 'node:events'
 import { createWriteStream } from 'node:fs'
 import { basename } from 'node:path'
 import {
@@ -265,6 +266,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OPTIONS.yaml`), stringifyCommandOptions(options, commandLineString))
   parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
   fs.ensureDirSync(parsedOutputFile.dir)
+  spinner.start(chalk.magentaBright(`PARSING "${filename(options.filePath)}"`))
 
   const inputDataStream = await Readable.from(allSourceData)
     .map((chunk: JsonPrimitive): Record<string, JsonPrimitive> => {
@@ -274,17 +276,20 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     }, { concurrency: 20 })
     .filter<Record<string, JsonPrimitive>>(d => applyFilters(options)(d), { concurrency: 20 })
     .reduce((acc: RowSet[], chunk: Record<string, JsonPrimitive>) => {
-      const CATEGORY = isEmpty(options.categoryField) ? 'default' : at(chunk, options.categoryField).join(' ')
+      const CATEGORY = isEmpty(options.categoryField)
+        ? 'default'
+        : at(chunk, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
 
       const fileNumber = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
       let fileName = parsedOutputFile.name
 
-      if (typeof CATEGORY !== 'undefined' && CATEGORY !== null)
+      if (typeof CATEGORY !== 'undefined' && CATEGORY !== null && CATEGORY !== 'default')
         fileName += ` ${CATEGORY}`
 
       fileName = filenamify(fileName, { replacement: '_' })
       if (!find(acc, { CATEGORY })) {
+        spinner.start(chalk.magentaBright(`IDENTIFIED CATEGORY "${CATEGORY}"`))
         acc.push({
           dataArray: [chunk],
           CATEGORY,
@@ -313,23 +318,30 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     })
 
     if ((options.fileSize || 0) === 0) {
-      stringifier.pipe(createWriteStream(join(parsedOutputFile.dir, `${rowSet.fileName}.csv`)))
+      stringifier.pipe(createWriteStream(join(parsedOutputFile.dir, `${rowSet.fileName}.csv`), 'utf8'))
     }
     else {
-      for await (const row of stringifier) {
-        if (typeof options.fileSize === 'number' && (rowSet.BYTES + row.length) > options.fileSize * 1024 * 1024) {
-          files.push({
-            BYTES: 0,
-            CATEGORY: rowSet.CATEGORY,
-            FILENUM: rowSet.FILENUM,
-            ROWS: 0,
+      let outputCsvFilePath = join(parsedOutputFile.dir, `${rowSet.fileName} ${rowSet.FILENUM}.csv`)
 
-          })
+      let destinationStream = createWriteStream(outputCsvFilePath, 'utf8')
+
+      for await (const row of stringifier) {
+        if ((rowSet.BYTES + row.length) > options.fileSize * 1024 * 1024) {
+          destinationStream.close()
+          spinner.succeed(chalk.greenBright(`FINISHED WRITING "${filename(outputCsvFilePath)}" FOR CATEGORY "${rowSet.CATEGORY}"`))
           rowSet.FILENUM!++
+          outputCsvFilePath = join(parsedOutputFile.dir, `${rowSet.fileName} ${rowSet.FILENUM}.csv`)
+          destinationStream = createWriteStream(outputCsvFilePath, 'utf8')
           rowSet.BYTES = 0
-          rowSet.lines = []
+          rowSet.ROWS = 0
         }
+        else if (!destinationStream.write(row)) {
+          await once(destinationStream, 'drain')
+        }
+        rowSet.BYTES += row.length
+        rowSet.ROWS++
       }
+      spinner.succeed(chalk.greenBright(`FINISHED WRITING "${filename(outputCsvFilePath)}" FOR CATEGORY "${rowSet.CATEGORY}"`))
     }
   }
 
