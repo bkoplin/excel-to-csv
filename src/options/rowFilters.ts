@@ -9,7 +9,6 @@ import {
   isNaN,
   toNumber,
 } from 'lodash-es'
-import { createRegExp } from 'magic-regexp'
 
 export default new Option<'--row-filters [operators...]', undefined, EmptyObject, Record<string, (JsonPrimitive | RegExp)[]>>(
   '--row-filters [operators...]',
@@ -28,9 +27,9 @@ export function processRowFilter(val: string | `${string}:${string}` | `${string
       if (!filters[key])
         filters[key] = []
 
-      if (value.length) {
+      if (typeof value === 'string' && value.length) {
         if (regexp === 'R') {
-          filters[key] = [...filters[key], createRegExp(value)]
+          filters[key] = [...filters[key], new RegExp(value)]
         }
         else if (!isNaN(toNumber(value))) {
           filters[key] = [...filters[key], toNumber(value)]

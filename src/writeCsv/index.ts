@@ -152,12 +152,6 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
 
       const parseResults = alphabetical(options.files, o => o.FILENUM ? `${o.CATEGORY}${padStart(`${o.FILENUM}`, maxFileNumLength, '0')}` : o.CATEGORY ?? o.PATH).map(o => pick(o, ['CATEGORY', 'ROWS', 'BYTES', 'PATH']))
 
-      const parseOutputs = options.files.map((o) => {
-        return mapValues(shake(omit(o, ['stream']), v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
-      })
-
-      const parseResultsCsv = Papa.unparse(parseOutputs)
-
       const totalRows = sumBy(options.files, 'ROWS')
 
       const totalBytes = sumBy(options.files, 'BYTES')
@@ -165,6 +159,12 @@ export default async function<Options extends ExcelOptionsWithGlobals | CSVOptio
       // spinner.text = chalk.magentaBright(`PARSED ${numbro(parsedLines).format({ thousandSeparated: true })} LINES; `) + chalk.greenBright(`WROTE ${numbro(totalRows).format({ thousandSeparated: true })} LINES; `)
 
       const totalFiles = options.files.length
+
+      const parseOutputs = options.files.map((o) => {
+        return mapValues(shake(omit(o, ['stream']), v => isUndefined(v)), v => isObjectLike(v) ? !isEmpty(v) ? yaml.stringify(v) : undefined : v)
+      })
+
+      const parseResultsCsv = Papa.unparse(parseOutputs)
 
       const summaryString = yaml.stringify({
         'TOTAL NON-HEADER ROWS PARSED': numbro(options.parsedLines).format({ thousandSeparated: true }),

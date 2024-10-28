@@ -1,3 +1,4 @@
+import type { JsonPrimitive } from 'type-fest'
 import type { FileMetrics } from '../types'
 import { once } from 'node:events'
 import {
@@ -10,7 +11,6 @@ import {
   Readable,
   Transform,
 } from 'node:stream'
-import timers from 'node:timers/promises'
 import { isDef } from '@antfu/utils'
 import {
   Command,
@@ -24,6 +24,7 @@ import fs from 'fs-extra'
 import {
   at,
   concat,
+  find,
   has,
   isEmpty,
   isNil,
@@ -51,6 +52,7 @@ import {
   sleep,
   zipToObject,
 } from 'radash'
+import { transform } from 'stream-transform'
 import Table from 'table-layout'
 import { stringify as makeYAML } from 'yaml'
 import {
@@ -128,11 +130,11 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   } = await oraPromise(async (_spinner) => {
     const d = await getWorkbook(options.filePath)
 
-    await timers.setTimeout(1000)
+    await sleep(1000)
 
     return d
   }, {
-    text: chalk.magentaBright(`Reading ${basename(options.filePath)}`),
+    text: chalk.magentaBright(`Reading ${basename(options.filePath)} (this may take a minute)`),
     successText: chalk.greenBright(`Successfully read ${basename(options.filePath)}`),
     failText: chalk.redBright(`failure reading ${basename(options.filePath)}`),
   })
@@ -189,7 +191,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
   if (firstRowHasNilValue) {
     spinner.warn(chalk.yellowBright(`The first row in the selected range contains null values; columns have been named "Column 1", "Column 2", etc.`))
-    await timers.setTimeout(2500)
+    await sleep(2500)
   }
   if (options.rangeIncludesHeader && !firstRowHasNilValue) {
     fields = allSourceData.shift() as string[]
@@ -256,27 +258,23 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
   const inputDataStream = await Readable.from(allSourceData)
 
-  const objectifyStream = new Transform({
-    objectMode: true,
-    transform(chunk, encoding, callback) {
-      const values = chunk.map(v => isString(v) ? v.trim() : v)
-
-      const d = zipToObject(concat(fields, ['source_file', 'source_sheet', 'source_range']), concat(values, rowMetaData))
-
-      callback(null, d)
-    },
-
-  })
-
-  const filterStream = new Transform({
-    objectMode: true,
-    transform(chunk, encoding, callback) {
-      if (applyFilters(options)(chunk))
-        callback(null, chunk)
-    },
-  })
-
   const columns = concat(fields, ['source_file', 'source_sheet', 'source_range'])
+
+  const objectifyStream = transform<JsonPrimitive[]>((chunk, callback) => {
+    const values = chunk.map(v => isString(v) ? v.trim() : v)
+
+    const d = zipToObject(columns, concat(values, rowMetaData))
+
+    callback(null, d)
+  })
+
+  const filterStream = transform<Record<string, JsonPrimitive>>((chunk, callback) => {
+    const filteredResult = applyFilters(options)(chunk)
+
+    if (filteredResult)
+      callback(null, chunk)
+    else callback(null, null)
+  })
 
   const headerLine = stringify([columns])
 
@@ -323,10 +321,30 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           stream: writeStream,
         }
 
+        writeStream.on('finish', async () => {
+          filterStream.pause()
+
+          const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
+
+          const formattedBytes = numbro(thisFileObject.BYTES).format({
+            output: 'byte',
+            spaceSeparated: true,
+            base: 'binary',
+            average: true,
+            mantissa: 2,
+            optionalMantissa: true,
+          })
+
+          const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
+
+          spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+          await sleep(1000)
+          filterStream.resume()
+        })
         writeStream.write(line)
         fileCategoryObject[CATEGORY] = [fileObject]
         spinner.text = chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`)
-        await sleep(1000)
+        await sleep(750)
       }
       else {
         let line = stringify([chunk], {
@@ -344,22 +362,22 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           if (fileObject.stream!.writableNeedDrain)
             await once(fileObject.stream!, 'drain')
 
-          await new Promise<void>(resolve => fileObject.stream!.close(async () => {
-            const formattedBytes = numbro(fileObject.BYTES).format({
-              output: 'byte',
-              spaceSeparated: true,
-              base: 'binary',
-              average: true,
-              mantissa: 2,
-              optionalMantissa: true,
-            })
+          // await new Promise<void>(resolve => fileObject.stream!.close(async () => {
+          //   const formattedBytes = numbro(fileObject.BYTES).format({
+          //     output: 'byte',
+          //     spaceSeparated: true,
+          //     base: 'binary',
+          //     average: true,
+          //     mantissa: 2,
+          //     optionalMantissa: true,
+          //   })
 
-            const formattedLineCount = numbro(fileObject.ROWS).format({ thousandSeparated: true })
+          //   const formattedLineCount = numbro(fileObject.ROWS).format({ thousandSeparated: true })
 
-            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(fileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-            await sleep(1000)
-            resolve()
-          }))
+          //   spinner.text = (chalk.yellow(`FINISHED WITH "${basename(fileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+          //   await sleep(1000)
+          //   resolve()
+          // }))
 
           const FILENUM = fileObject.FILENUM! + 1
 
@@ -367,8 +385,12 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
           const writeStream = createWriteStream(PATH, 'utf-8')
 
-          writeStream.on('finish', () => {
-            const formattedBytes = numbro(fileObject.BYTES).format({
+          writeStream.on('finish', async () => {
+            filterStream.pause()
+
+            const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
+
+            const formattedBytes = numbro(thisFileObject.BYTES).format({
               output: 'byte',
               spaceSeparated: true,
               base: 'binary',
@@ -377,9 +399,11 @@ export async function excelCommandAction(this: typeof excelCommamd) {
               optionalMantissa: true,
             })
 
-            const formattedLineCount = numbro(fileObject.ROWS).format({ thousandSeparated: true })
+            const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
 
-            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(fileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+            await sleep(1000)
+            filterStream.resume()
           })
           line = stringify([chunk], {
             header: options.writeHeader,
