@@ -17,7 +17,7 @@ export interface FileMetrics {
   ROWS: number
   PATH: string
   CATEGORY?: string
-  FILTER?: Record<string, JsonPrimitive[]> | undefined
+  FILTER?: Record<string, (RegExp | JsonPrimitive)[]> | undefined
   stream?: WriteStream
 }
 
