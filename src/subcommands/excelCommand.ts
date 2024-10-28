@@ -27,12 +27,14 @@ import {
   isString,
   isUndefined,
   last,
+  sumBy,
 } from 'lodash-es'
 import numbro from 'numbro'
 import ora, { oraPromise } from 'ora'
 import {
   join,
   parse,
+  relative,
 } from 'pathe'
 import { filename } from 'pathe/utils'
 import {
@@ -41,6 +43,7 @@ import {
   sleep,
   zipToObject,
 } from 'radash'
+import Table from 'table-layout'
 import {
   compareAndLogRanges,
   extractDataFromWorksheet,
@@ -264,6 +267,8 @@ export async function excelCommandAction(this: typeof excelCommamd) {
     },
   })
 
+  const columns = concat(fields, ['source_file', 'source_sheet', 'source_range'])
+
   const categoryStream = new Transform({
     objectMode: true,
     async transform(chunk, encoding, callback) {
@@ -313,7 +318,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
       else {
         let line = stringify([chunk], {
           header: false,
-          columns: concat(fields, ['source_file', 'source_sheet', 'source_range']),
+          columns,
         })
 
         const lineBufferLength = Buffer.from(line).length
@@ -365,7 +370,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           })
           line = stringify([chunk], {
             header: options.writeHeader,
-            columns: concat(fields, ['source_file', 'source_sheet', 'source_range']),
+            columns,
           })
           writeStream.write(line)
           fileCategoryObject[CATEGORY].push({
@@ -433,9 +438,87 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
           return true
         }))
+
+        const table = new Table(fileObjectArray, {
+          maxWidth: 600,
+          ignoreEmptyColumns: true,
+          columns: [
+            {
+              name: 'CATEGORY',
+              get: cellValue => cellValue === undefined ? '' : chalk.bold(chalk.yellow(cellValue)),
+            },
+            {
+              name: 'PATH',
+              get: cellValue => chalk.cyan(join('../', relative(parse(options.filePath).dir, cellValue as string))),
+            },
+            {
+              name: 'FILENUM',
+              get: cellValue => '',
+            },
+            {
+              name: 'stream',
+              get: cellValue => '',
+            },
+            {
+              name: 'ROWS',
+              get: cellValue => numbro(cellValue).format({ thousandSeparated: true }),
+              padding: {
+                left: 'ROWS: ',
+                right: ' ',
+              },
+            },
+            {
+              name: 'BYTES',
+              get: (cellValue) => {
+                const formattedValue = numbro(cellValue)
+
+                return formattedValue.format({
+                  output: 'byte',
+                  spaceSeparated: true,
+                  base: 'general',
+                  average: true,
+                  mantissa: 2,
+                  optionalMantissa: true,
+                })
+              },
+            },
+          ],
+
+        })
+
+        // const formattedParsedLines = numbro(options.parsedLines).format({ thousandSeparated: true })
+        const totalRows = sumBy(fileObjectArray, 'ROWS')
+
+        const totalFiles = fileObjectArray.length
+
+        const totalBytes = sumBy(fileObjectArray, 'BYTES')
+
+        const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
+
+        const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
+
+        const formattedTotalBytes = numbro(totalBytes).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'general',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
+        })
+
+        let spinnerText = `SUCCESSFULLY WROTE ${chalk.green(formattedTotalRows)} LINES TO ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
+
+        if (options.writeHeader)
+          spinnerText += chalk.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
+        else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)).base}"`)}\n`)
+
+        spinner.stopAndPersist({
+          symbol: '🚀',
+          text: `${spinnerText}\n${table.toString()}`,
+        })
         // await
         // }
-        spinner.succeed(`${chalk.greenBright(`Successfully parsed and split ${filename(options.filePath)}`)}. ${chalk.italic('Write functions will continue to run until all streams are closed')}`)
+        // spinner.succeed(`${chalk.greenBright(`Successfully parsed and split ${filename(options.filePath)}`)}. ${chalk.italic('Write functions will continue to run until all streams are closed')}`)
       }
     },
   )
