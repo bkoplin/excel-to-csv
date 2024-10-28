@@ -1,6 +1,9 @@
 import type { FileMetrics } from '../types'
 import { once } from 'node:events'
-import { createWriteStream } from 'node:fs'
+import {
+  createWriteStream,
+  writeFileSync,
+} from 'node:fs'
 import { basename } from 'node:path'
 import {
   pipeline,
@@ -24,13 +27,17 @@ import {
   has,
   isEmpty,
   isNil,
+  isObjectLike,
   isString,
   isUndefined,
   last,
+  mapValues,
+  omit,
   sumBy,
 } from 'lodash-es'
 import numbro from 'numbro'
 import ora, { oraPromise } from 'ora'
+import Papa from 'papaparse'
 import {
   join,
   parse,
@@ -40,10 +47,12 @@ import { filename } from 'pathe/utils'
 import {
   get,
   isArray,
+  shake,
   sleep,
   zipToObject,
 } from 'radash'
 import Table from 'table-layout'
+import { stringify as makeYAML } from 'yaml'
 import {
   compareAndLogRanges,
   extractDataFromWorksheet,
@@ -123,7 +132,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
     return d
   }, {
-    text: `Reading ${basename(options.filePath)}`,
+    text: chalk.magentaBright(`Reading ${basename(options.filePath)}`),
     successText: chalk.greenBright(`Successfully read ${basename(options.filePath)}`),
     failText: chalk.redBright(`failure reading ${basename(options.filePath)}`),
   })
@@ -268,6 +277,10 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   })
 
   const columns = concat(fields, ['source_file', 'source_sheet', 'source_range'])
+
+  const headerLine = stringify([columns])
+
+  writeFileSync(join(parsedOutputFile.dir, '..', `${parsedOutputFile.name} HEADER.csv`), headerLine, 'utf8')
 
   const categoryStream = new Transform({
     objectMode: true,
@@ -505,6 +518,46 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           mantissa: 2,
           optionalMantissa: true,
         })
+
+        const parseOutputs = fileObjectArray.map((o) => {
+          return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
+            if (k === 'CATEGORY') {
+              return `${options.categoryField.join(' + ')} = ${v}`
+            }
+            else {
+              return isObjectLike(v) ? !isEmpty(v) ? makeYAML(v) : undefined : v
+            }
+          })
+        })
+
+        const parseResultsCsv = Papa.unparse(parseOutputs)
+
+        const summaryString = makeYAML({
+          // 'TOTAL NON-HEADER ROWS PARSED': numbro(options.parsedLines).format({ thousandSeparated: true }),
+          // 'TOTAL NON-HEADER ROWS SKIPPED': numbro(options.skippedLines)s.format({ thousandSeparated: true }),
+          'TOTAL NON-HEADER ROWS WRITTEN': numbro(totalRows).format({ thousandSeparated: true }),
+          // 'TOTAL BYTES READ': numbro(options.bytesRead).format({
+          //   output: 'byte',
+          //   spaceSeparated: true,
+          //   base: 'binary',
+          //   average: true,
+          //   mantissa: 2,
+          //   optionalMantissa: true,
+          // }),
+          'TOTAL BYTES WRITTEN': numbro(totalBytes).format({
+            output: 'byte',
+            spaceSeparated: true,
+            base: 'binary',
+            average: true,
+            mantissa: 2,
+            optionalMantissa: true,
+          }),
+          'TOTAL FILES': numbro(totalFiles).format({ thousandSeparated: true }),
+
+        })
+
+        fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
+        fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
 
         let spinnerText = `SUCCESSFULLY WROTE ${chalk.green(formattedTotalRows)} LINES TO ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
 
