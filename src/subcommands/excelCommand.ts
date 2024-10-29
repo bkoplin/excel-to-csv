@@ -116,15 +116,15 @@ export async function excelCommandAction(this: typeof excelCommamd) {
   if (newFilePath !== options.filePath) {
     this.setOptionValueWithSource('filePath', newFilePath, 'cli')
   }
-  spinner.start(chalk.magentaBright(`Reading ${basename(options.filePath)} (this may take a minute)`))
+  // spinner.start(chalk.magentaBright(`Reading ${basename(options.filePath)} (this may take a minute)`))
 
   const {
     wb,
     bytesRead,
   } = await getWorkbook(options.filePath)
 
-  spinner.succeed(chalk.greenBright(`Successfully read ${basename(options.filePath)}`))
-  await sleep(1000)
+  // spinner.succeed(chalk.greenBright(`Successfully read ${basename(options.filePath)}`))
+
   options.bytesRead = bytesRead
   // failText: chalk.redBright(`failure reading ${basename(options.filePath)}`),
   this.setOptionValueWithSource('bytesRead', bytesRead, 'default')

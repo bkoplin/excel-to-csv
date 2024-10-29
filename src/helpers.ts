@@ -7,6 +7,7 @@ import type {
   ConditionalPick,
   EmptyObject,
   JsonPrimitive,
+  KeysOfUnion,
   StringKeyOf,
 } from 'type-fest'
 import type {
@@ -125,6 +126,7 @@ export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise
   return inquirerFileSelector({
     message: `Navigate to the ${colors.yellowBright(fileType)} file you want to parse (only files with an ${fileExtString} extension will be shown, and the file names must start with an alphanumeric character)`,
     basePath,
+    showExcluded: true,
     // showExcluded: false,
     allowCancel: true,
     pageSize: 20,
@@ -224,7 +226,7 @@ export function generateParsedCsvFilePath({
 }
 export function generateCommandLineString(combinedOptions: Partial<CombinedProgramOptions>, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
-    const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as StringKeyOf<CombinedProgramOptions>, o => o.long as string)
+    const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as KeysOfUnion<CombinedProgramOptions>, o => o.long as string)
 
     if (key in optionFlags && command.getOptionValueSourceWithGlobals(key) !== 'implied' && command.getOptionValueSourceWithGlobals(key) !== 'default' && typeof value !== 'undefined') {
       if (isObject(value)) {

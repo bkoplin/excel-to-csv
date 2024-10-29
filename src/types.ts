@@ -24,8 +24,13 @@ type ExcelCommand = typeof excelCommamd
 
 type ProgramCommand = typeof program
 
+type CSVCommandOpts = ReturnType<CsvCommand['opts']>
+
 export type CSVOptions =
-  { [Prop in keyof ReturnType<CsvCommand['opts']>]: ReturnType<CsvCommand['opts']>[Prop] extends string | number ? Exclude<ReturnType<CsvCommand['opts']>[Prop], true> : ReturnType<CsvCommand['opts']>[Prop] }
+  { [Prop in keyof CSVCommandOpts as `${Prop}`]: {
+    1: Exclude<CSVCommandOpts[Prop], boolean>
+    0: CSVCommandOpts[Prop]
+  }[CSVCommandOpts[Prop] extends string | number ? 1 : 0] }
 
 export type ExcelOptions = ReturnType<ExcelCommand['opts']>
 
@@ -41,4 +46,4 @@ export type ExcelOptionsWithGlobals = Simplify<ExcelOptions & {
   bytesRead: number
 }>
 
-export type CombinedProgramOptions = CSVOptionsWithGlobals | ExcelOptionsWithGlobals
+export type CombinedProgramOptions = CSVOptions | ExcelOptionsWithGlobals
