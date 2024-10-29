@@ -4,10 +4,8 @@ import type {
   JsonPrimitive,
   Simplify,
 } from 'type-fest'
-import type {
-  _csvCommands,
-  program,
-} from '.'
+import type { program } from '.'
+import type { csvCommand } from './subcommands/csvCommand'
 import type { excelCommamd } from './subcommands/excelCommand'
 
 export interface FileMetrics {
@@ -20,13 +18,14 @@ export interface FileMetrics {
   stream?: WriteStream
 }
 
-type CsvCommand = typeof _csvCommands
+type CsvCommand = typeof csvCommand
 
 type ExcelCommand = typeof excelCommamd
 
 type ProgramCommand = typeof program
 
-export type CSVOptions = ReturnType<CsvCommand['opts']>
+export type CSVOptions =
+  { [Prop in keyof ReturnType<CsvCommand['opts']>]: ReturnType<CsvCommand['opts']>[Prop] extends string | number ? Exclude<ReturnType<CsvCommand['opts']>[Prop], true> : ReturnType<CsvCommand['opts']>[Prop] }
 
 export type ExcelOptions = ReturnType<ExcelCommand['opts']>
 
