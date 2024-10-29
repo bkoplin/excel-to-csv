@@ -9,7 +9,6 @@ import { basename } from 'node:path'
 import {
   pipeline,
   Readable,
-  Transform,
 } from 'node:stream'
 import { isDef } from '@antfu/utils'
 import {
@@ -253,46 +252,91 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
   writeFileSync(join(parsedOutputFile.dir, '..', `${parsedOutputFile.name} HEADER.csv`), headerLine, 'utf8')
 
-  const categoryStream = new Transform({
-    objectMode: true,
-    async transform(chunk, encoding, callback) {
-      const CATEGORY: 'default' | string = isEmpty(options.categoryField)
-        ? `default`
-        : at(chunk, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
+  const categoryStream = transform(async (chunk, callback) => {
+    const CATEGORY: 'default' | string = isEmpty(options.categoryField)
+      ? `default`
+      : at(chunk, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
 
-      let PATH = parsedOutputFile.name
+    let PATH = parsedOutputFile.name
 
-      if (CATEGORY !== 'default')
-        PATH += ` ${CATEGORY}`
+    if (CATEGORY !== 'default')
+      PATH += ` ${CATEGORY}`
 
-      if (isDef(options.rowFilters) && !isEmpty(options.rowFilters))
-        PATH += ` FILTERED`
+    if (isDef(options.rowFilters) && !isEmpty(options.rowFilters))
+      PATH += ` FILTERED`
 
-      PATH = filenamify(PATH, { replacement: '_' })
-      if (!has(fileCategoryObject, CATEGORY)) {
-        const line = stringify([chunk], {
-          header: true,
-          columns: concat(fields, ['source_file', 'source_sheet', 'source_range']),
+    PATH = filenamify(PATH, { replacement: '_' })
+    if (!has(fileCategoryObject, CATEGORY)) {
+      const line = stringify([chunk], {
+        header: true,
+        columns: concat(fields, ['source_file', 'source_sheet', 'source_range']),
+      })
+
+      const lineBufferLength = Buffer.from(line).length
+
+      const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
+
+      PATH += ` ${FILENUM}`
+      PATH = join(parsedOutputFile.dir, `${PATH}.csv`)
+
+      const writeStream = createWriteStream(PATH, 'utf-8')
+
+      const fileObject = {
+        CATEGORY,
+        BYTES: lineBufferLength,
+        ROWS: 1,
+        FILENUM,
+        PATH,
+        FILTER: options.rowFilters,
+        stream: writeStream,
+      }
+
+      writeStream.on('finish', async () => {
+        filterStream.pause()
+
+        const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
+
+        const formattedBytes = numbro(thisFileObject.BYTES).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'binary',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
         })
 
-        const lineBufferLength = Buffer.from(line).length
+        const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
 
-        const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
+        spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+        await sleep(1000)
+        filterStream.resume()
+      })
+      writeStream.write(line)
+      fileCategoryObject[CATEGORY] = [fileObject]
+      spinner.text = chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`)
+      await sleep(750)
+    }
+    else {
+      let line = stringify([chunk], {
+        header: false,
+        columns,
+      })
 
-        PATH += ` ${FILENUM}`
-        PATH = join(parsedOutputFile.dir, `${PATH}.csv`)
+      const lineBufferLength = Buffer.from(line).length
+
+      const fileObject = last(fileCategoryObject[CATEGORY])!
+
+      const maxFileSizeBytes = typeof options.fileSize === 'number' && options.fileSize > 0 ? (options.fileSize ?? 0) * 1024 * 1024 : Infinity
+
+      if (lineBufferLength + fileObject.BYTES > (maxFileSizeBytes)) {
+        if (fileObject.stream!.writableNeedDrain)
+          await once(fileObject.stream!, 'drain')
+
+        const FILENUM = fileObject.FILENUM! + 1
+
+        PATH = join(parsedOutputFile.dir, `${PATH} ${FILENUM}.csv`)
 
         const writeStream = createWriteStream(PATH, 'utf-8')
-
-        const fileObject = {
-          CATEGORY,
-          BYTES: lineBufferLength,
-          ROWS: 1,
-          FILENUM,
-          PATH,
-          FILTER: options.rowFilters,
-          stream: writeStream,
-        }
 
         writeStream.on('finish', async () => {
           filterStream.pause()
@@ -314,79 +358,31 @@ export async function excelCommandAction(this: typeof excelCommamd) {
           await sleep(1000)
           filterStream.resume()
         })
-        writeStream.write(line)
-        fileCategoryObject[CATEGORY] = [fileObject]
-        spinner.text = chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`)
-        await sleep(750)
-      }
-      else {
-        let line = stringify([chunk], {
-          header: false,
+        line = stringify([chunk], {
+          header: options.writeHeader,
           columns,
         })
-
-        const lineBufferLength = Buffer.from(line).length
-
-        const fileObject = last(fileCategoryObject[CATEGORY])!
-
-        const maxFileSizeBytes = typeof options.fileSize === 'number' && options.fileSize > 0 ? (options.fileSize ?? 0) * 1024 * 1024 : Infinity
-
-        if (lineBufferLength + fileObject.BYTES > (maxFileSizeBytes)) {
-          if (fileObject.stream!.writableNeedDrain)
-            await once(fileObject.stream!, 'drain')
-
-          const FILENUM = fileObject.FILENUM! + 1
-
-          PATH = join(parsedOutputFile.dir, `${PATH} ${FILENUM}.csv`)
-
-          const writeStream = createWriteStream(PATH, 'utf-8')
-
-          writeStream.on('finish', async () => {
-            filterStream.pause()
-
-            const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
-
-            const formattedBytes = numbro(thisFileObject.BYTES).format({
-              output: 'byte',
-              spaceSeparated: true,
-              base: 'binary',
-              average: true,
-              mantissa: 2,
-              optionalMantissa: true,
-            })
-
-            const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
-
-            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-            await sleep(1000)
-            filterStream.resume()
-          })
-          line = stringify([chunk], {
-            header: options.writeHeader,
-            columns,
-          })
-          writeStream.write(line)
-          fileCategoryObject[CATEGORY].push({
-            CATEGORY,
-            BYTES: lineBufferLength,
-            ROWS: 1,
-            FILENUM,
-            PATH,
-            FILTER: options.rowFilters,
-            stream: writeStream,
-          })
-        }
-        else {
-          if (fileObject.stream!.writableNeedDrain)
-            await once(fileObject.stream!, 'drain')
-
-          fileObject.BYTES += lineBufferLength
-          fileObject.ROWS++
-          fileObject.stream!.write(line)
-        }
+        writeStream.write(line)
+        fileCategoryObject[CATEGORY].push({
+          CATEGORY,
+          BYTES: lineBufferLength,
+          ROWS: 1,
+          FILENUM,
+          PATH,
+          FILTER: options.rowFilters,
+          stream: writeStream,
+        })
       }
-      callback()
-    },
+      else {
+        if (fileObject.stream!.writableNeedDrain)
+          await once(fileObject.stream!, 'drain')
+
+        fileObject.BYTES += lineBufferLength
+        fileObject.ROWS++
+        fileObject.stream!.write(line)
+      }
+    }
+    callback()
   })
 
   pipeline(
@@ -404,12 +400,44 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
         const fileObjectArray = Object.values(files).flat()
 
-        await Promise.all(fileObjectArray.map(async (file) => {
+        const totalRows = sumBy(fileObjectArray, 'ROWS')
+
+        const totalFiles = fileObjectArray.length
+
+        const totalBytes = sumBy(fileObjectArray, 'BYTES')
+
+        const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
+
+        const formattedTotalParsedLines = numbro(totalParsedLines).format({ thousandSeparated: true })
+
+        const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
+
+        const formattedTotalBytes = numbro(totalBytes).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'general',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
+        })
+
+        const parseJobOutputs = fileObjectArray.map((o) => {
+          return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
+            if (k === 'CATEGORY') {
+              return `${options.categoryField.join(' + ')} = ${v}`
+            }
+            else {
+              return isObjectLike(v) ? !isEmpty(v) ? makeYAML(v) : undefined : v
+            }
+          })
+        })
+
+        for (const file of fileObjectArray) {
           if (isDef(file.stream) && file.stream.writableFinished !== true) {
             if (file.stream.writableNeedDrain)
               await once(file.stream, 'drain')
 
-            await new Promise<void>(resolve => file.stream!.close(async () => {
+            await new Promise<void>(resolve => file.stream!.end(async () => {
               const formattedBytes = numbro(file.BYTES).format({
                 output: 'byte',
                 spaceSeparated: true,
@@ -427,10 +455,10 @@ export async function excelCommandAction(this: typeof excelCommamd) {
             }))
           }
 
-          return true
-        }))
+          continue
+        }
 
-        const table = new Table(fileObjectArray, {
+        const logTable = new Table(fileObjectArray, {
           maxWidth: 600,
           ignoreEmptyColumns: true,
           columns: [
@@ -444,11 +472,11 @@ export async function excelCommandAction(this: typeof excelCommamd) {
             },
             {
               name: 'FILENUM',
-              get: cellValue => '',
+              get: _cellValue => '',
             },
             {
               name: 'stream',
-              get: cellValue => '',
+              get: _cellValue => '',
             },
             {
               name: 'ROWS',
@@ -477,39 +505,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
         })
 
-        const totalRows = sumBy(fileObjectArray, 'ROWS')
-
-        const totalFiles = fileObjectArray.length
-
-        const totalBytes = sumBy(fileObjectArray, 'BYTES')
-
-        const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
-
-        const formattedTotalParsedLines = numbro(totalParsedLines).format({ thousandSeparated: true })
-
-        const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
-
-        const formattedTotalBytes = numbro(totalBytes).format({
-          output: 'byte',
-          spaceSeparated: true,
-          base: 'general',
-          average: true,
-          mantissa: 2,
-          optionalMantissa: true,
-        })
-
-        const parseOutputs = fileObjectArray.map((o) => {
-          return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
-            if (k === 'CATEGORY') {
-              return `${options.categoryField.join(' + ')} = ${v}`
-            }
-            else {
-              return isObjectLike(v) ? !isEmpty(v) ? makeYAML(v) : undefined : v
-            }
-          })
-        })
-
-        const parseResultsCsv = Papa.unparse(parseOutputs)
+        const parseResultsCsv = Papa.unparse(parseJobOutputs)
 
         const summaryString = makeYAML({
           'TOTAL LINES PARSED': formattedTotalParsedLines,
@@ -531,7 +527,7 @@ export async function excelCommandAction(this: typeof excelCommamd) {
 
         spinner.stopAndPersist({
           symbol: '🚀',
-          text: `${spinnerText}\n${table.toString()}`,
+          text: `${spinnerText}\n${logTable.toString()}`,
         })
       }
     },
