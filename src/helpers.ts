@@ -13,6 +13,7 @@ import type {
   CombinedProgramOptions,
   FileMetrics,
 } from './types'
+import { readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { objectEntries } from '@antfu/utils'
 import { Separator } from '@inquirer/core'
@@ -128,8 +129,27 @@ export function selectFile(fileType: 'Excel' | 'CSV', basePath: string): Promise
     allowCancel: true,
     pageSize: 20,
     theme: { style: { currentDir: (text: string) => colors.magentaBright(join(`.`, basename(basePath), relative(basePath, text))) } },
-    match(filePath) {
-      return !/^[^A-Z0-9]/i.test(filePath.name) && pathRegexp.test(filePath.name)
+    filter(filePath) {
+      const isFile = filePath.isFile()
+
+      const isDir = filePath.isDirectory()
+
+      if (isFile) {
+        return pathRegexp.test(filePath.name)
+      }
+
+      const nameStartTest = /^[A-Z0-9]/i.test(filePath.name)
+
+      if (!nameStartTest)
+        return false
+
+      if (isDir) {
+        const hasSubDirsOrValidFiles = readdirSync(filePath.path, { withFileTypes: true }).some(file => file.isDirectory() || pathRegexp.test(file.name))
+
+        return hasSubDirsOrValidFiles
+      }
+
+      return false
     },
   })
 }
