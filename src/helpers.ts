@@ -285,8 +285,13 @@ export function stringifyValue(val: any): any {
 export function isEmptyObject(obj: any): obj is EmptyObject {
   return isObject(obj) && Object.keys(obj).length === 0
 }
-export function formatHeaderValues(results: { data: JsonPrimitive[] }): string[] {
-  return results.data.map((value, index, self) => {
+export function formatHeaderValues(results: { data: JsonPrimitive[] } | JsonPrimitive[]): (string | boolean)[] {
+  const jsonArray = isArray(results) ? results : results.data
+
+  return jsonArray.map((value, index, self) => {
+    if (isEmpty(value) || isNil(value))
+      return false
+
     const occurrencesAfter = self.slice(index + 1).filter(v => v === value).length
 
     const occurrencesBefore = self.slice(0, index).filter(v => v === value).length + 1
