@@ -15,26 +15,29 @@ import {
   isUndefined,
   range,
 } from 'lodash-es'
-import ora from 'ora'
+import ora, { oraPromise } from 'ora'
+import { basename } from 'pathe'
 import { inRange } from 'radash'
 import XLSX from 'xlsx'
 
-export async function getWorkbook(inputPath: string): Promise<{
+export function getWorkbook(inputPath: string): Promise<{
   wb: XLSX.WorkBook
   bytesRead: number
 
 }> {
-  const buffer = await readFile(inputPath)
+  return oraPromise(async () => {
+    const buffer = await readFile(inputPath)
 
-  return {
-    wb: XLSX.read(buffer, {
-      type: 'buffer',
-      cellDates: true,
-      raw: true,
-      dense: true,
-    }),
-    bytesRead: buffer.length,
-  }
+    return {
+      wb: XLSX.read(buffer, {
+        type: 'buffer',
+        cellDates: true,
+        raw: true,
+        dense: true,
+      }),
+      bytesRead: buffer.length,
+    }
+  }, `${chalk.magentaBright('Reading file')} ${chalk.cyanBright(basename(inputPath))}`)
 }
 export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined): range is string {
   const sheetRange = ws?.['!ref']
