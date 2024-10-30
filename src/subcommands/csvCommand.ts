@@ -23,10 +23,8 @@ import {
   concat,
   find,
   has,
-  isArray,
   isEmpty,
   isNil,
-  isNumber,
   isObjectLike,
   isUndefined,
   last,
@@ -156,11 +154,23 @@ export const csvCommand = new Command('csv')
 
     let confirmQuitChoice: boolean
 
-    const rowMetaData = [basename(options.filePath), options.fromLine, options.rowCount]
-
-    const combinedRowCountFromLine = !isNumber(get(options, 'rowCount', null)) ? undefined : get(options, 'rowCount', 1) + get(options, 'fromLine', 1)
+    const rowCountValue = get(options, 'rowCount', null)
 
     const fromLineValue = get(options, 'fromLine', 1)
+
+    const rowMetaData = [basename(options.filePath), fromLineValue, rowCountValue]
+
+    const combinedRowCountFromLine = !rowCountValue ? undefined : (rowCountValue || 1) + fromLineValue
+
+    const columnsFunction = get(options, 'rangeIncludesHeader', false)
+      ? (headerLine: string[]) => {
+          const headerArray = headerLine.map(v => v.trim()).map(v => isEmpty(v) || isNil(v) ? false : v)
+
+          fields = formatHeaderValues(headerArray).filter((v): v is string => v !== false)
+
+          return formatHeaderValues(headerArray)
+        }
+      : false
 
     const csvSourceStream = parser({
       bom: true,
@@ -171,13 +181,13 @@ export const csvCommand = new Command('csv')
       relax_quotes: true,
       info: true,
       trim: false,
-      columns: false,
+      columns: columnsFunction,
       quote: false,
       relax_column_count: true,
       raw: true,
     })
 
-    const headerTransformStream = transform(async (chunk: {
+    const perLineTransformStream = transform(async (chunk: {
       record: Record<string, JsonPrimitive>
       info: Info & CastingContext
       raw: string
@@ -234,18 +244,18 @@ export const csvCommand = new Command('csv')
           totalSkippedRecords++
         }
 
-        const rowArray = get(chunk, 'record', []).map(name => name!.trim())
-        // const columns = get(chunk.info, 'columns', [])
+        // const rowArray = get(chunk, 'record', []).map(name => name!.trim())
+        // // const columns = get(chunk.info, 'columns', [])
 
-        if (isEmpty(fields) && get(options, 'rangeIncludesHeader', false)) {
-          rawHeaderLine = chunk.raw
-          if (options.rangeIncludesHeader && isArray(chunk.record)) {
-            fields = formatHeaderValues({ data: rowArray })
-          }
-          else if (isArray(rowArray)) {
-            fields = rowArray.map((_, i) => `Column ${i + 1}`)
-          }
-        }
+        // if (isEmpty(fields) && get(options, 'rangeIncludesHeader', false)) {
+        //   rawHeaderLine = chunk.raw
+        //   if (options.rangeIncludesHeader && isArray(chunk.record)) {
+        //     fields = formatHeaderValues({ data: rowArray })
+        //   }
+        //   else if (isArray(rowArray)) {
+        //     fields = rowArray.map((_, i) => `Column ${i + 1}`)
+        //   }
+        // }
 
         if (get(chunk, 'info.lines'))
           totalParsedLines = chunk.info.lines
@@ -253,7 +263,7 @@ export const csvCommand = new Command('csv')
         if (get(chunk, 'info.records'))
           totalParsedRecords = chunk.info.records
 
-        if (get(chunk, 'info.error') || rowArray.length !== fields.length) {
+        if (get(chunk, 'info.error')) {
           if (isUndefined(confirmQuitChoice) && chunk.info.error.code === 'CSV_RECORD_INCONSISTENT_FIELDS_LENGTH') {
             const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(chunk.info?.error?.message)}`
 
@@ -296,11 +306,11 @@ export const csvCommand = new Command('csv')
               .join(get(options, 'delimiter', ',')))
           }
           else {
-            headerTransformStream.push(chunk)
+            perLineTransformStream.push(chunk)
           }
         }
         else {
-          headerTransformStream.push(chunk)
+          perLineTransformStream.push(chunk)
         }
       }
     })
@@ -498,7 +508,7 @@ export const csvCommand = new Command('csv')
     pipeline(
       // readStream,
       // csvSourceStream,
-      headerTransformStream,
+      perLineTransformStream,
       categoryStream,
       async (err) => {
         if (err) {
