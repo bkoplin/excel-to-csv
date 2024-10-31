@@ -30,6 +30,7 @@ import {
   last,
   mapValues,
   sumBy,
+  values,
 } from 'lodash-es'
 import numbro from 'numbro'
 import ora from 'ora'
@@ -43,8 +44,8 @@ import {
 import { filename } from 'pathe/utils'
 import {
   alphabetical,
+  flat,
   get,
-  invert,
   isEqual,
   isString,
   omit,
@@ -188,7 +189,12 @@ export const csvCommand = new Command('csv')
       // if (get(options, 'rangeIncludesHeader'))
       //   combinedRowCountFromLine--
     }
+
+    let rawSplitHeaderRow: string[]
+
     const columnsFunction = (headerLine: string[]) => {
+      rawSplitHeaderRow = headerLine
+
       const headerArray = headerLine.map(v => v.trim()).map(v => isEmpty(v) || isNil(v) ? false : v).map((v, i) => get(options, 'rangeIncludesHeader', false) ? v : `Column ${i + 1}`)
 
       fields = formatHeaderValues(headerArray).filter((v): v is string => v !== false)
@@ -213,13 +219,16 @@ export const csvCommand = new Command('csv')
       quote: get(options, 'quote'),
       relax_column_count: true,
       raw: true,
-      // on_record(chunk: CsvDataPayload) {
-      //   return {
-      //     record: chunk.record,
-      //     info: chunk.info,
-      //     raw: chunk.raw,
-      //   }
-      // },
+      on_record(chunk: CsvDataPayload) {
+        if (isEqual(rawSplitHeaderRow, chunk.raw.split(get(options, 'delimiter', ','))))
+          return null
+
+        return {
+          record: chunk.record,
+          info: chunk.info,
+          raw: chunk.raw,
+        }
+      },
     })
 
     interface CsvDataPayload {
@@ -233,13 +242,6 @@ export const csvCommand = new Command('csv')
 
       if (typeof chunk === 'string' || typeof foundSkippableLine !== 'undefined') {
         totalSkippedLines++
-        if (has(chunk, 'info.lines') && typeof foundSkippableLine !== 'undefined') {
-          const formattedLineCount = numbro(chunk.info.lines).format({ thousandSeparated: true })
-
-          const formattedPreviousLine = numbro(foundSkippableLine[1]).format({ thousandSeparated: true })
-
-          spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(formattedLineCount)}; LINE MATCHES VALUE FROM SKIPPABLE LINE ${chalk.redBright(formattedPreviousLine)}`))
-        }
         callback(null, null)
       }
       else {
@@ -294,7 +296,7 @@ export const csvCommand = new Command('csv')
 
           const errorMessage = get(chunk, 'info.error.message')
 
-          const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(totalParsedLines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
+          const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
 
           // if (typeof errorMessage === 'string') {
           //   parsingErrorMessage += `: ${chalk.italic.redBright(errorMessage)}`
@@ -337,7 +339,7 @@ export const csvCommand = new Command('csv')
           if (isSkippableLine === true) {
             skippableLines.push([chunk.raw, chunk.info.lines])
             spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} AND FUTURE EQUIVALENT LINES`))
-            await sleep(1000)
+            await sleep(500)
           }
           csvSourceStream.resume()
         }
@@ -345,17 +347,17 @@ export const csvCommand = new Command('csv')
         else {
           const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
 
-          if (applyFilters(options)(parsedRecord) && !isEqual(parsedRecord, invert(parsedRecord))) {
+          if (applyFilters(options)(parsedRecord)) {
             callback(null, {
-              ...parsedRecord,
-              ...{
-                source_file: basename(options.filePath),
-                line: chunk.info.lines,
+              record: {
+                ...parsedRecord,
+                ...{
+                  source_file: basename(options.filePath),
+                  line: chunk.info.lines,
+                },
               },
+              info: chunk.info,
             })
-            if ((chunk.info.records % 1000) === 0 && chunk.info.records > 0) {
-              spinner.info(chalk.magentaBright(`PARSED ${numbro(chunk.info.records).format({ thousandSeparated: true })} LINES`))
-            }
           }
           else {
             callback(null, null)
@@ -409,24 +411,26 @@ export const csvCommand = new Command('csv')
     //   }
     // }
 
-    const csvFileProcessor = transform(async (chunk, callback) => {
+    const csvFileProcessor = transform(async ({
+      record,
+      info,
+    }: CsvDataPayload, callback) => {
       fs.ensureDirSync(join(parsedOutputFile.dir, 'DATA'))
 
       const CATEGORY: 'default' | string = isEmpty(options.categoryField)
         ? `default`
-        : at(chunk, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
+        : at(record, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
 
-      let PATH = parsedOutputFile.name
+      let baseOutputPath = parsedOutputFile.name
 
       if (CATEGORY !== 'default')
-        PATH += ` ${CATEGORY}`
+        baseOutputPath += ` ${CATEGORY}`
 
       if (isDef(options.rowFilters) && !isEmpty(options.rowFilters))
-        PATH += ` FILTERED`
+        baseOutputPath += ` FILTERED`
 
-      PATH = filenamify(PATH, { replacement: '_' })
       if (!has(fileCategoryObject, CATEGORY)) {
-        const line = csvStringifySync([chunk], {
+        const line = csvStringifySync([record], {
           header: true,
           columns,
         })
@@ -435,10 +439,12 @@ export const csvCommand = new Command('csv')
 
         const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
+        let PATH = baseOutputPath
+
         if (typeof FILENUM !== 'undefined')
           PATH += ` ${FILENUM}`
 
-        PATH = join(parsedOutputFile.dir, 'DATA', `${PATH}.csv`)
+        PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(PATH, { replacement: '_' })}.csv`)
 
         const writeStream = createWriteStream(PATH, 'utf-8')
 
@@ -453,14 +459,14 @@ export const csvCommand = new Command('csv')
         }
 
         writeStream.on('finish', async () => {
-          csvSourceStream.pause()
+          filterRecordTransform.pause()
 
-          const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
+          const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH: baseOutputPath })!
 
           const formattedBytes = numbro(thisFileObject.BYTES).format({
             output: 'byte',
             spaceSeparated: true,
-            base: 'binary',
+            base: 'general',
             average: true,
             mantissa: 2,
             optionalMantissa: true,
@@ -470,7 +476,7 @@ export const csvCommand = new Command('csv')
 
           spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
           await sleep(1000)
-          csvSourceStream.resume()
+          filterRecordTransform.resume()
         })
         writeStream.write(line)
         fileCategoryObject[CATEGORY] = [fileObject]
@@ -478,7 +484,7 @@ export const csvCommand = new Command('csv')
         await sleep(750)
       }
       else {
-        let line = csvStringifySync([chunk], {
+        let line = csvStringifySync([record], {
           header: false,
           columns,
         })
@@ -493,24 +499,26 @@ export const csvCommand = new Command('csv')
           // if (fileObject.stream!.writableNeedDrain)
           //   await once(fileObject.stream!, 'drain')
 
-          const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
+          const FILENUM = fileObject.FILENUM! + 1
+
+          let PATH = baseOutputPath
 
           if (typeof FILENUM !== 'undefined')
             PATH += ` ${FILENUM}`
 
-          PATH = join(parsedOutputFile.dir, 'DATA', `${PATH}.csv`)
+          PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(PATH, { replacement: '_' })}.csv`)
 
           const writeStream = createWriteStream(PATH, 'utf-8')
 
           writeStream.on('finish', async () => {
-            csvSourceStream.pause()
+            filterRecordTransform.pause()
 
             const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
 
             const formattedBytes = numbro(thisFileObject.BYTES).format({
               output: 'byte',
               spaceSeparated: true,
-              base: 'binary',
+              base: 'general',
               average: true,
               mantissa: 2,
               optionalMantissa: true,
@@ -520,9 +528,9 @@ export const csvCommand = new Command('csv')
 
             spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
             await sleep(750)
-            csvSourceStream.resume()
+            filterRecordTransform.resume()
           })
-          line = csvStringifySync([chunk], {
+          line = csvStringifySync([record], {
             header: options.writeHeader,
             columns,
           })
@@ -544,6 +552,11 @@ export const csvCommand = new Command('csv')
           fileObject.BYTES += lineBufferLength
           fileObject.ROWS++
           fileObject.stream!.write(line)
+          if ((info.records % 1000) === 0 && info.records > 0) {
+            const totalWrittenRecords = sumBy(flat(values(fileCategoryObject)), 'ROWS')
+
+            spinner.info(`${chalk.magentaBright(`READ ${numbro(totalParsedLines).format({ thousandSeparated: true })} LINES`)}; ${chalk.greenBright(`WROTE ${numbro(totalWrittenRecords).format({ thousandSeparated: true })} RECORDS`)}`)
+          }
         }
       }
       callback()
@@ -575,7 +588,7 @@ export const csvCommand = new Command('csv')
                 const formattedBytes = numbro(file.BYTES).format({
                   output: 'byte',
                   spaceSeparated: true,
-                  base: 'binary',
+                  base: 'general',
                   average: true,
                   mantissa: 2,
                   optionalMantissa: true,
