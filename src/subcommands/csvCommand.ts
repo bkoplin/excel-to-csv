@@ -115,18 +115,11 @@ export const csvCommand = new Command('csv')
       await sleep(750)
       resolve()
     }))
-    // options.bytesRead = bytesRead
-    // failText: chalk.redBright(`failure reading ${basename(options.filePath)}`),
-    // this.setOptionValueWithSource('bytesRead', bytesRead, 'default')
-    // if (typeof options.sheetName !== 'string' || !wb.SheetNames.includes(options.sheetName)) {
-    //   options.sheetName = await setSheetName(wb)
-    //   this.setOptionValueWithSource('sheetName', options.sheetName, 'cli')
-    // }
 
     const parsedOutputFile = generateParsedCsvFilePath({
       parsedInputFile: parse(options.filePath),
       filters: options.rowFilters,
-      //   sheetName: options.sheetName,
+
     })
 
     if (isUndefined(options.rangeIncludesHeader)) {
@@ -185,9 +178,6 @@ export const csvCommand = new Command('csv')
     }
     else {
       combinedRowCountFromLine = (rowCountValue || 1) + fromLineValue
-
-      // if (get(options, 'rangeIncludesHeader'))
-      //   combinedRowCountFromLine--
     }
 
     let rawSplitHeaderRow: string[]
@@ -207,12 +197,12 @@ export const csvCommand = new Command('csv')
     const csvSourceStream = parser({
       bom: true,
       delimiter: get(options, 'delimiter', ','),
-      // record_delimiter: '\r\n',
+
       from_line: fromLineValue,
       to_line: combinedRowCountFromLine,
       encoding: 'utf-8',
       escape: get(options, 'escape'),
-      // relax_quotes: true,
+
       info: true,
       trim: false,
       columns: columnsFunction,
@@ -298,9 +288,6 @@ export const csvCommand = new Command('csv')
 
           const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
 
-          // if (typeof errorMessage === 'string') {
-          //   parsingErrorMessage += `: ${chalk.italic.redBright(errorMessage)}`
-          // }
           if (askAboutErrors !== false) {
             spinner.warn(`${parsingErrorMessage}\n${chalk.redBright('RAW LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}`)
 
@@ -325,11 +312,7 @@ export const csvCommand = new Command('csv')
                 askAboutErrors = true
               else askAboutErrors = false
             }
-          // confirmQuitChoice = false
           }
-          // else {
-          //   spinner.info(`${parsingErrorMessage}`)
-          // }
 
           const [, isSkippableLine] = await tryPrompt('confirm', {
             message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
@@ -365,51 +348,6 @@ export const csvCommand = new Command('csv')
         }
       }
     })
-
-    // csvSourceStream.on('data', async (chunk: CsvDataPayload) => {
-
-    //   filterRecordTransform.write(chunk.record)
-    // })
-    // const allSourceData = extractDataFromWorksheet(parsedRange, ws)
-
-    // const firstRowHasNilValue = isArray(allSourceData?.[0]) && allSourceData[0].some(f => isNil(f))
-
-    // if (firstRowHasNilValue) {
-    //   spinner.warn(chalk.yellowBright(`The first row in the selected range contains null values; columns have been named "Column 1", "Column 2", etc.`))
-    //   await sleep(2500)
-    // }
-    // if (options.rangeIncludesHeader && !firstRowHasNilValue) {
-    //   fields = allSourceData.shift() as string[]
-    // }
-    // else {
-    //   fields = allSourceData[0].map((_, i) => `Column ${i + 1}`)
-    // }
-
-    // const categoryOption = get(options, 'categoryField', [])
-
-    // if (isEmpty(categoryOption)) {
-    //   const [, confirmCategory] = await tryPrompt('confirm', {
-    //     message: 'Would you like to select a one or more fields to split the file into separate files?',
-    //     default: false,
-    //   })
-
-    //   if (confirmCategory === true) {
-    //     const [, newCategory] = await tryPrompt('checkbox', {
-    //       message: `Select a column to group rows from input file by...`,
-    //       choices: [...fields.map(value => ({
-    //         name: value,
-    //         value,
-    //       })), new Prompts.Separator()],
-    //       loop: true,
-    //       pageSize: fields.length > 15 ? 15 : 7,
-    //     })
-
-    //     if (typeof newCategory !== 'undefined') {
-    //       options.categoryField = newCategory as string[]
-    //       this.setOptionValueWithSource('categoryField', newCategory, 'cli')
-    //     }
-    //   }
-    // }
 
     const csvFileProcessor = transform(async ({
       record,
@@ -496,9 +434,6 @@ export const csvCommand = new Command('csv')
         const maxFileSizeBytes = typeof options.fileSize === 'number' && options.fileSize > 0 ? (options.fileSize ?? 0) * 1024 * 1024 : Infinity
 
         if (lineBufferLength + fileObject.BYTES > (maxFileSizeBytes)) {
-          // if (fileObject.stream!.writableNeedDrain)
-          //   await once(fileObject.stream!, 'drain')
-
           const FILENUM = fileObject.FILENUM! + 1
 
           let PATH = baseOutputPath
@@ -546,9 +481,6 @@ export const csvCommand = new Command('csv')
           })
         }
         else {
-          // if (fileObject.stream!.writableNeedDrain)
-          //   await once(fileObject.stream!, 'drain')
-
           fileObject.BYTES += lineBufferLength
           fileObject.ROWS++
           fileObject.stream!.write(line)
@@ -567,8 +499,7 @@ export const csvCommand = new Command('csv')
       csvSourceStream,
       filterRecordTransform,
       csvFileProcessor,
-      // perLineTransformStream,
-      // categoryStream,
+
       async (err) => {
         if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
           spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
