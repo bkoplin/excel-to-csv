@@ -44,6 +44,8 @@ import { filename } from 'pathe/utils'
 import {
   alphabetical,
   get,
+  invert,
+  isEqual,
   isString,
   omit,
   pick,
@@ -155,7 +157,7 @@ export const csvCommand = new Command('csv')
       row: '',
     }
 
-    const skippableLines: string[] = []
+    const skippableLines: [string, number][] = []
 
     const readStream = createReadStream(options.filePath, 'utf-8')
 
@@ -227,12 +229,17 @@ export const csvCommand = new Command('csv')
     }
 
     const filterRecordTransform = transform(async (chunk: CsvDataPayload, callback) => {
-      if (typeof chunk === 'string' || skippableLines.includes(chunk.raw)) {
+      const foundSkippableLine = skippableLines.find(([line]) => line === chunk.raw)
+
+      if (typeof chunk === 'string' || typeof foundSkippableLine !== 'undefined') {
         totalSkippedLines++
+        if (has(chunk, 'info.lines') && typeof foundSkippableLine !== 'undefined') {
+          const formattedLineCount = numbro(chunk.info.lines).format({ thousandSeparated: true })
 
-        if (has(chunk, 'info.lines'))
-          spinner.info(chalk.cyanBright(`SKIPPING LINE ${numbro(chunk.info.lines).format({ thousandSeparated: true })}`))
+          const formattedPreviousLine = numbro(foundSkippableLine[1]).format({ thousandSeparated: true })
 
+          spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(formattedLineCount)}; LINE MATCHES VALUE FROM SKIPPABLE LINE ${chalk.redBright(formattedPreviousLine)}`))
+        }
         callback(null, null)
       }
       else {
@@ -308,7 +315,7 @@ export const csvCommand = new Command('csv')
             }
             else if (isUndefined(askAboutErrors)) {
               const [, confirmAboutAsking] = await tryPrompt('confirm', {
-                message: 'Would you like to be asked about future errors in parsing the file?',
+                message: 'Would you like to be asked if you want to quit due to future parsing errors from this file?',
                 default: false,
               })
 
@@ -328,7 +335,7 @@ export const csvCommand = new Command('csv')
           })
 
           if (isSkippableLine === true) {
-            skippableLines.push(chunk.raw)
+            skippableLines.push([chunk.raw, chunk.info.lines])
             spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} AND FUTURE EQUIVALENT LINES`))
             await sleep(1000)
           }
@@ -336,9 +343,9 @@ export const csvCommand = new Command('csv')
         }
 
         else {
-          if (applyFilters(options)(chunk.record)) {
-            const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
+          const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
 
+          if (applyFilters(options)(parsedRecord) && !isEqual(parsedRecord, invert(parsedRecord))) {
             callback(null, {
               ...parsedRecord,
               ...{
@@ -346,6 +353,9 @@ export const csvCommand = new Command('csv')
                 line: chunk.info.lines,
               },
             })
+            if ((chunk.info.records % 1000) === 0 && chunk.info.records > 0) {
+              spinner.info(chalk.magentaBright(`PARSED ${numbro(chunk.info.records).format({ thousandSeparated: true })} LINES`))
+            }
           }
           else {
             callback(null, null)
@@ -480,8 +490,8 @@ export const csvCommand = new Command('csv')
         const maxFileSizeBytes = typeof options.fileSize === 'number' && options.fileSize > 0 ? (options.fileSize ?? 0) * 1024 * 1024 : Infinity
 
         if (lineBufferLength + fileObject.BYTES > (maxFileSizeBytes)) {
-          if (fileObject.stream!.writableNeedDrain)
-            await once(fileObject.stream!, 'drain')
+          // if (fileObject.stream!.writableNeedDrain)
+          //   await once(fileObject.stream!, 'drain')
 
           const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
@@ -509,7 +519,7 @@ export const csvCommand = new Command('csv')
             const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
 
             spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-            await sleep(1000)
+            await sleep(750)
             csvSourceStream.resume()
           })
           line = csvStringifySync([chunk], {
@@ -528,8 +538,8 @@ export const csvCommand = new Command('csv')
           })
         }
         else {
-          if (fileObject.stream!.writableNeedDrain)
-            await once(fileObject.stream!, 'drain')
+          // if (fileObject.stream!.writableNeedDrain)
+          //   await once(fileObject.stream!, 'drain')
 
           fileObject.BYTES += lineBufferLength
           fileObject.ROWS++
