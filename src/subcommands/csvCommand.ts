@@ -31,6 +31,7 @@ import {
   mapValues,
   omit,
   sumBy,
+  trim,
 } from 'lodash-es'
 import numbro from 'numbro'
 import ora from 'ora'
@@ -44,8 +45,10 @@ import {
 import { filename } from 'pathe/utils'
 import {
   get,
+  select,
   shake,
   sleep,
+  zipToObject,
 } from 'radash'
 import { transform } from 'stream-transform'
 import Table from 'table-layout'
@@ -139,6 +142,7 @@ export const csvCommand = new Command('csv')
 
     const rawPartialLine = {
       line: 0,
+      rowArray: [] as string[],
       row: '',
     }
 
@@ -150,7 +154,7 @@ export const csvCommand = new Command('csv')
 
     let totalParsedRecords = 0
 
-    let totalSkippedRecords = get(options, 'fromLine', 0)
+    let totalSkippedLines = get(options, 'fromLine', 0)
 
     let confirmQuitChoice: boolean
 
@@ -185,6 +189,55 @@ export const csvCommand = new Command('csv')
       quote: false,
       relax_column_count: true,
       raw: true,
+      async on_record(chunk: {
+        record: Record<string, JsonPrimitive>
+        info: Info & CastingContext
+        raw: string
+      }) {
+        const rawRowValue = get(chunk, 'raw', '')
+
+        const rawRowArray = rawRowValue.split(get(options, 'delimiter', ','))
+
+        if (rawRowArray.length === get(chunk, 'info.columns', []).length) {
+          return chunk
+        }
+        else {
+          if ((rawPartialLine.line + 1) === get(chunk, 'info.lines', 0)) {
+            const fullRowArray = concat(rawPartialLine.rowArray, rawRowArray)
+
+            const fullRow = rawPartialLine.row + rawRowValue
+
+            if (fullRowArray.length === get(chunk, 'info.columns', []).length) {
+              chunk.raw = fullRow
+
+              const rowKeys: string[] = select(chunk.info.columns as Array<{ name: string } | { disabled: boolean }>, col => get(col, 'name'), col => isDef(get(col, 'name')))
+
+              const rowValues = select(fullRowArray, col => trim(col), (col, i) => get(chunk, `info.columns[${i}].disabled`, false) !== false)
+
+              chunk.record = zipToObject(rowKeys, rowValues)
+              rawPartialLine.line = 0
+              rawPartialLine.rowArray = []
+              rawPartialLine.row = ''
+
+              return chunk
+            }
+            else {
+              rawPartialLine.line = get(chunk, 'info.lines', 0)
+              rawPartialLine.rowArray = fullRowArray
+              rawPartialLine.row = fullRow
+
+              return chunk
+            }
+          }
+          else {
+            rawPartialLine.line = get(chunk, 'info.lines', 0)
+            rawPartialLine.rowArray = rawRowArray
+            rawPartialLine.row = rawRowValue
+
+            return chunk
+          }
+        }
+      },
     })
 
     const perLineTransformStream = transform(async (chunk: {
@@ -192,9 +245,53 @@ export const csvCommand = new Command('csv')
       info: Info & CastingContext
       raw: string
     }, callback) => {
+      if (typeof chunk === 'string' || skippableLines.includes(chunk.raw)) {
+        totalSkippedLines++
+      }
+
+      const chunkError = get(chunk, 'info.error')
+
+      if (chunkError) {
+        if (isUndefined(confirmQuitChoice) && get(chunkError, 'code') === 'CSV_RECORD_INCONSISTENT_FIELDS_LENGTH') {
+          const errorMessage = get(chunk, 'info.error.message')
+
+          let parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(totalParsedLines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}`
+
+          if (typeof errorMessage === 'string') {
+            parsingErrorMessage += `: ${chalk.italic.redBright(errorMessage)}`
+          }
+          spinner.warn(parsingErrorMessage)
+
+          const [, confirmQuit] = await tryPrompt('confirm', {
+            message: 'Would you like to quit parsing the file?',
+            default: false,
+          })
+
+          if (confirmQuit === true) {
+            spinner.fail(chalk.redBright(`Quitting; consider re-running the program with the --from-line option set to ${totalParsedLines} to set the header to line ${numbro(totalParsedLines).format({ thousandSeparated: true })}`))
+            process.exit(1)
+          }
+          confirmQuitChoice = false
+        }
+        else if (!skippableLines.includes(chunk.raw)) {
+          const [, isSkippableLine] = await tryPrompt('confirm', {
+            message: `Is this line skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}`,
+            default: true,
+          })
+
+          if (isSkippableLine === true) {
+            skippableLines.push(chunk.raw)
+
+            return null
+          }
+        }
+      }
+
       const categoryOption = get(options, 'categoryField', [])
 
-      if (isEmpty(categoryOption) && this.getOptionValueSource('categoryField') !== 'cli') {
+      totalParsedLines = get(chunk, 'info.lines', totalParsedLines)
+      totalParsedRecords = get(chunk, 'info.records', totalParsedRecords)
+      if (isEmpty(categoryOption) && this.getOptionValueSource('categoryField') !== 'cli' && fields.length > 0) {
         csvSourceStream.pause()
 
         const [, confirmCategory] = await tryPrompt('confirm', {
@@ -231,90 +328,6 @@ export const csvCommand = new Command('csv')
         callback(null, chunk.record)
       else callback(null, null)
     })
-
-    csvSourceStream.on('readable', async () => {
-      let chunk: null | {
-        info: Info & CastingContext
-        record: Record<string, JsonPrimitive>
-        raw: string
-      }
-
-      while ((chunk = csvSourceStream.read()) !== null) {
-        if (typeof chunk === 'string' || skippableLines.includes(chunk.raw) || rawHeaderLine === chunk.raw || typeof chunk.raw === 'undefined') {
-          totalSkippedRecords++
-        }
-
-        // const rowArray = get(chunk, 'record', []).map(name => name!.trim())
-        // // const columns = get(chunk.info, 'columns', [])
-
-        // if (isEmpty(fields) && get(options, 'rangeIncludesHeader', false)) {
-        //   rawHeaderLine = chunk.raw
-        //   if (options.rangeIncludesHeader && isArray(chunk.record)) {
-        //     fields = formatHeaderValues({ data: rowArray })
-        //   }
-        //   else if (isArray(rowArray)) {
-        //     fields = rowArray.map((_, i) => `Column ${i + 1}`)
-        //   }
-        // }
-
-        if (get(chunk, 'info.lines'))
-          totalParsedLines = chunk.info.lines
-
-        if (get(chunk, 'info.records'))
-          totalParsedRecords = chunk.info.records
-
-        if (get(chunk, 'info.error')) {
-          if (isUndefined(confirmQuitChoice) && chunk.info.error.code === 'CSV_RECORD_INCONSISTENT_FIELDS_LENGTH') {
-            const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(chunk.info?.error?.message)}`
-
-            spinner.warn(parsingErrorMessage)
-
-            const [, confirmQuit] = await tryPrompt('confirm', {
-              message: 'Would you like to quit parsing the file?',
-              default: false,
-            })
-
-            if (confirmQuit === true) {
-              spinner.fail(chalk.redBright(`Quitting; consider re-running the program with the --from-line option set to ${chunk.info.lines} to set the header to line ${numbro(chunk.info.lines).format({ thousandSeparated: true })}`))
-              process.exit(1)
-            }
-            confirmQuitChoice = false
-          }
-          else if (!skippableLines.includes(chunk.raw)) {
-            const [, isSkippableLine] = await tryPrompt('confirm', {
-              message: `Is this line skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}`,
-              default: true,
-            })
-
-            if (isSkippableLine === true) {
-              skippableLines.push(chunk.raw)
-            }
-          }
-          else if (rawPartialLine.line === 0) {
-            rawPartialLine.line = get(chunk, 'info.lines', 0)
-            rawPartialLine.row += get(chunk, 'raw', '')
-          }
-          else if ((rawPartialLine.line + 1) === get(chunk, 'info.lines', 0)) {
-            rawPartialLine.row += chunk.raw
-
-            const fullRoawString = rawPartialLine.row
-
-            // skippableLines.push(rawPartialLine.row)
-            rawPartialLine.line = 0
-            rawPartialLine.row = ''
-            csvSourceStream.unshift(fullRoawString.split(get(options, 'delimiter', ',')).map(v => `"${v}"`)
-              .join(get(options, 'delimiter', ',')))
-          }
-          else {
-            perLineTransformStream.push(chunk)
-          }
-        }
-        else {
-          perLineTransformStream.push(chunk)
-        }
-      }
-    })
-    readStream.pipe(csvSourceStream)
 
     // const allSourceData = extractDataFromWorksheet(parsedRange, ws)
 
@@ -506,8 +519,8 @@ export const csvCommand = new Command('csv')
     })
 
     pipeline(
-      // readStream,
-      // csvSourceStream,
+      readStream,
+      csvSourceStream,
       perLineTransformStream,
       categoryStream,
       async (err) => {
@@ -605,7 +618,7 @@ export const csvCommand = new Command('csv')
 
           const formattedTotalParsedRecords = numbro(totalParsedRecords).format({ thousandSeparated: true })
 
-          const formattedTotalSkippedRecords = numbro(totalSkippedRecords).format({ thousandSeparated: true })
+          const formattedTotalSkippedRecords = numbro(totalSkippedLines).format({ thousandSeparated: true })
 
           const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
 
