@@ -44,6 +44,7 @@ import { filename } from 'pathe/utils'
 import {
   alphabetical,
   get,
+  isString,
   omit,
   pick,
   shake,
@@ -108,7 +109,7 @@ export const csvCommand = new Command('csv')
 
     await new Promise<void>(resolve => inputStream.on('readable', async () => {
       spinner.succeed(chalk.greenBright(`Successfully OPENED ${basename(options.filePath)}`))
-      await sleep(1000)
+      await sleep(750)
       resolve()
     }))
     // options.bytesRead = bytesRead
@@ -172,7 +173,7 @@ export const csvCommand = new Command('csv')
 
     const fromLineValue = get(options, 'fromLine', 1)
 
-    const rowMetaData = [basename(options.filePath), fromLineValue, rowCountValue]
+    const rowMetadataColumns = ['source_file', 'line']
 
     let combinedRowCountFromLine: number | undefined
 
@@ -182,15 +183,15 @@ export const csvCommand = new Command('csv')
     else {
       combinedRowCountFromLine = (rowCountValue || 1) + fromLineValue
 
-      if (get(options, 'rangeIncludesHeader'))
-        combinedRowCountFromLine--
+      // if (get(options, 'rangeIncludesHeader'))
+      //   combinedRowCountFromLine--
     }
     const columnsFunction = (headerLine: string[]) => {
       const headerArray = headerLine.map(v => v.trim()).map(v => isEmpty(v) || isNil(v) ? false : v).map((v, i) => get(options, 'rangeIncludesHeader', false) ? v : `Column ${i + 1}`)
 
       fields = formatHeaderValues(headerArray).filter((v): v is string => v !== false)
-      columns = concat(fields, ['source_file', 'from_line', 'record_count'])
-      fs.writeFileSync(join(parsedOutputFile.dir, '..', `${parsedOutputFile.name} HEADER.csv`), csvStringifySync([columns]), 'utf8')
+      columns = concat(fields, rowMetadataColumns)
+      fs.writeFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`), csvStringifySync([columns]), 'utf8')
 
       return formatHeaderValues(headerArray)
     }
@@ -210,13 +211,13 @@ export const csvCommand = new Command('csv')
       quote: get(options, 'quote'),
       relax_column_count: true,
       raw: true,
-      on_record(chunk: CsvDataPayload) {
-        return {
-          record: chunk.record,
-          info: chunk.info,
-          raw: chunk.raw,
-        }
-      },
+      // on_record(chunk: CsvDataPayload) {
+      //   return {
+      //     record: chunk.record,
+      //     info: chunk.info,
+      //     raw: chunk.raw,
+      //   }
+      // },
     })
 
     interface CsvDataPayload {
@@ -226,119 +227,137 @@ export const csvCommand = new Command('csv')
     }
 
     const filterRecordTransform = transform(async (chunk: CsvDataPayload, callback) => {
-      if (applyFilters(options)(chunk.record))
-        callback(null, chunk.record)
-      else callback(null, null)
-    })
-
-    csvSourceStream.on('data', async (chunk: CsvDataPayload) => {
       if (typeof chunk === 'string' || skippableLines.includes(chunk.raw)) {
         totalSkippedLines++
 
         if (has(chunk, 'info.lines'))
           spinner.info(chalk.cyanBright(`SKIPPING LINE ${numbro(chunk.info.lines).format({ thousandSeparated: true })}`))
 
-        return
+        callback(null, null)
       }
+      else {
+        const categoryOption: string[] = get(options, 'categoryField', [])
 
-      const categoryOption: string[] = get(options, 'categoryField', [])
+        if (isEmpty(categoryOption) && this.getOptionValueSource('categoryField') !== 'cli' && fields.length > 0) {
+          csvSourceStream.pause()
 
-      if (isEmpty(categoryOption) && this.getOptionValueSource('categoryField') !== 'cli' && fields.length > 0) {
-        csvSourceStream.pause()
-
-        const [, confirmCategory] = await tryPrompt('confirm', {
-          message: 'Would you like to select a one or more fields to split the file into separate files?',
-          default: false,
-        })
-
-        if (confirmCategory === true) {
-          const columnChoices = fields.map((value, i) => ({
-            name: `${chalk.yellowBright(value)} ${chalk.italic(`column ${i + 1}/${fields.length}`)}`,
-            value,
-          }))
-
-          const [, newCategory] = await tryPrompt('checkbox', {
-            message: `Select a column to group rows from input file by...`,
-            choices: [...alphabetical(columnChoices, d => d.value), new Separator()],
-            loop: true,
-            pageSize: fields.length > 15 ? 15 : 7,
+          const [, confirmCategory] = await tryPrompt('confirm', {
+            message: 'Would you like to select a one or more fields to split the file into separate files?',
+            default: false,
           })
 
-          if (typeof newCategory !== 'undefined') {
-            options.categoryField = newCategory as string[]
-            this.setOptionValueWithSource('categoryField', newCategory, 'cli')
+          if (confirmCategory === true) {
+            const columnChoices = fields.map((value, i) => ({
+              name: `${chalk.yellowBright(value)} ${chalk.italic(`column ${i + 1}/${fields.length}`)}`,
+              value,
+            }))
+
+            const [, newCategory] = await tryPrompt('checkbox', {
+              message: `Select a column to group rows from input file by...`,
+              choices: [...alphabetical(columnChoices, d => d.value), new Separator()],
+              loop: true,
+              pageSize: fields.length > 15 ? 15 : 7,
+            })
+
+            if (typeof newCategory !== 'undefined') {
+              options.categoryField = newCategory as string[]
+              this.setOptionValueWithSource('categoryField', newCategory, 'cli')
+            }
+            else {
+              this.setOptionValueWithSource('categoryField', [], 'cli')
+            }
           }
           else {
             this.setOptionValueWithSource('categoryField', [], 'cli')
           }
+          csvSourceStream.resume()
         }
-        else {
-          this.setOptionValueWithSource('categoryField', [], 'cli')
+        else if (commandLineStream.writable) {
+          const commandLineString = generateCommandLineString(options, this)
+
+          commandLineStream.end(stringifyCommandOptions(options, commandLineString))
         }
-        csvSourceStream.resume()
-      }
-      else if (commandLineStream.writable) {
-        const commandLineString = generateCommandLineString(options, this)
 
-        commandLineStream.end(stringifyCommandOptions(options, commandLineString))
-      }
+        const chunkError = chunk.info.error
 
-      const chunkError = chunk.info.error
+        totalParsedLines = get(chunk, 'info.lines', totalParsedLines) - get(options, 'fromLine', 0)
+        totalParsedRecords = get(chunk, 'info.records', totalParsedRecords)
+        if (chunkError) {
+          csvSourceStream.pause()
 
-      totalParsedLines = get(chunk, 'info.lines', totalParsedLines)
-      totalParsedRecords = get(chunk, 'info.records', totalParsedRecords)
-      if (chunkError) {
-        csvSourceStream.pause()
+          const errorMessage = get(chunk, 'info.error.message')
 
-        const errorMessage = get(chunk, 'info.error.message')
+          const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(totalParsedLines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
 
-        const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(totalParsedLines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
+          // if (typeof errorMessage === 'string') {
+          //   parsingErrorMessage += `: ${chalk.italic.redBright(errorMessage)}`
+          // }
+          if (askAboutErrors !== false) {
+            spinner.warn(`${parsingErrorMessage}\n${chalk.redBright('RAW LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}`)
 
-        // if (typeof errorMessage === 'string') {
-        //   parsingErrorMessage += `: ${chalk.italic.redBright(errorMessage)}`
-        // }
-        if (askAboutErrors !== false) {
-          spinner.warn(`${parsingErrorMessage}\n${chalk.redBright('RAW LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}`)
-
-          const [, confirmQuit] = await tryPrompt('confirm', {
-            message: 'Would you like to quit parsing the file?',
-            default: false,
-          })
-
-          if (isUndefined(askAboutErrors)) {
-            const [, confirmAboutAsking] = await tryPrompt('confirm', {
-              message: 'Would you like to be asked about future errors in parsing the file?',
+            const [, confirmQuit] = await tryPrompt('confirm', {
+              message: 'Would you like to quit parsing the file?',
               default: false,
             })
 
-            if (confirmAboutAsking === true)
-              askAboutErrors = true
-            else askAboutErrors = false
-          }
-          if (confirmQuit === true) {
-            spinner.fail(chalk.redBright(`Quitting; consider re-running the program with the --from-line option set to ${totalParsedLines} to set the header to line ${numbro(totalParsedLines).format({ thousandSeparated: true })}`))
-            process.exit(1)
-          }
+            if (confirmQuit === true) {
+              const formattedLineCount = numbro(chunk.info.lines).format({ thousandSeparated: true })
+
+              spinner.warn(chalk.cyanBright(`Quitting; consider re-running the program with the --from-line option set to ${chalk.redBright(formattedLineCount)} to set the header to line ${chalk.redBright(formattedLineCount)}`))
+              callback(chunk.info.error)
+            }
+            else if (isUndefined(askAboutErrors)) {
+              const [, confirmAboutAsking] = await tryPrompt('confirm', {
+                message: 'Would you like to be asked about future errors in parsing the file?',
+                default: false,
+              })
+
+              if (confirmAboutAsking === true)
+                askAboutErrors = true
+              else askAboutErrors = false
+            }
           // confirmQuitChoice = false
-        }
-        // else {
-        //   spinner.info(`${parsingErrorMessage}`)
-        // }
+          }
+          // else {
+          //   spinner.info(`${parsingErrorMessage}`)
+          // }
 
-        const [, isSkippableLine] = await tryPrompt('confirm', {
-          message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
-          default: true,
-        })
+          const [, isSkippableLine] = await tryPrompt('confirm', {
+            message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
+            default: true,
+          })
 
-        if (isSkippableLine === true) {
-          skippableLines.push(chunk.raw)
-          spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} AND FUTURE EQUIVALENT LINES`))
-          await sleep(1000)
+          if (isSkippableLine === true) {
+            skippableLines.push(chunk.raw)
+            spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} AND FUTURE EQUIVALENT LINES`))
+            await sleep(1000)
+          }
+          csvSourceStream.resume()
         }
-        csvSourceStream.resume()
+
+        else {
+          if (applyFilters(options)(chunk.record)) {
+            const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
+
+            callback(null, {
+              ...parsedRecord,
+              ...{
+                source_file: basename(options.filePath),
+                line: chunk.info.lines,
+              },
+            })
+          }
+          else {
+            callback(null, null)
+          }
+        }
       }
-      filterRecordTransform.write(chunk.record)
     })
+
+    // csvSourceStream.on('data', async (chunk: CsvDataPayload) => {
+
+    //   filterRecordTransform.write(chunk.record)
+    // })
     // const allSourceData = extractDataFromWorksheet(parsedRange, ws)
 
     // const firstRowHasNilValue = isArray(allSourceData?.[0]) && allSourceData[0].some(f => isNil(f))
@@ -381,8 +400,7 @@ export const csvCommand = new Command('csv')
     // }
 
     const csvFileProcessor = transform(async (chunk, callback) => {
-      parsedOutputFile.dir = join(parsedOutputFile.dir, 'DATA')
-      fs.ensureDirSync(parsedOutputFile.dir)
+      fs.ensureDirSync(join(parsedOutputFile.dir, 'DATA'))
 
       const CATEGORY: 'default' | string = isEmpty(options.categoryField)
         ? `default`
@@ -407,8 +425,10 @@ export const csvCommand = new Command('csv')
 
         const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
-        PATH += ` ${FILENUM}`
-        PATH = join(parsedOutputFile.dir, `${PATH}.csv`)
+        if (typeof FILENUM !== 'undefined')
+          PATH += ` ${FILENUM}`
+
+        PATH = join(parsedOutputFile.dir, 'DATA', `${PATH}.csv`)
 
         const writeStream = createWriteStream(PATH, 'utf-8')
 
@@ -463,9 +483,12 @@ export const csvCommand = new Command('csv')
           if (fileObject.stream!.writableNeedDrain)
             await once(fileObject.stream!, 'drain')
 
-          const FILENUM = fileObject.FILENUM! + 1
+          const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
-          PATH = join(parsedOutputFile.dir, `${PATH} ${FILENUM}.csv`)
+          if (typeof FILENUM !== 'undefined')
+            PATH += ` ${FILENUM}`
+
+          PATH = join(parsedOutputFile.dir, 'DATA', `${PATH}.csv`)
 
           const writeStream = createWriteStream(PATH, 'utf-8')
 
@@ -524,7 +547,7 @@ export const csvCommand = new Command('csv')
       // perLineTransformStream,
       // categoryStream,
       async (err) => {
-        if (err && csvSourceStream.info.lines !== combinedRowCountFromLine) {
+        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
           spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
           process.exit(1)
         }
@@ -565,7 +588,7 @@ export const csvCommand = new Command('csv')
             columns: [
               {
                 name: 'CATEGORY',
-                get: cellValue => cellValue === undefined ? '' : chalk.bold(chalk.yellow(cellValue)),
+                get: cellValue => cellValue === undefined || cellValue === 'default' ? '' : chalk.bold(chalk.yellow(cellValue)),
               },
               {
                 name: 'PATH',
@@ -625,7 +648,7 @@ export const csvCommand = new Command('csv')
 
           const parseOutputs = fileObjectArray.map((o) => {
             return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
-              if (k === 'CATEGORY') {
+              if (k === 'CATEGORY' && !isEmpty(options.categoryField)) {
                 return `${options.categoryField.join(' + ')} = ${v}`
               }
               else {
@@ -647,8 +670,8 @@ export const csvCommand = new Command('csv')
 
           })
 
-          fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
-          fs.outputFileSync(join(parsedOutputFile.dir, '..', `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
+          fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
+          fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
 
           let spinnerText = `SUCCESSFULLY READ ${chalk.magentaBright(formattedTotalParsedLines)} LINES AND WROTE ${chalk.green(formattedTotalRows)} LINES TO ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
 
