@@ -2,7 +2,11 @@ import type {
   CastingContext,
   Info,
 } from 'csv-parse'
-import type { JsonPrimitive } from 'type-fest'
+import type { HandlerCallback } from 'stream-transform'
+import type {
+  JsonObject,
+  JsonPrimitive,
+} from 'type-fest'
 import type { FileMetrics } from '../types'
 import { once } from 'node:events'
 import {
@@ -22,7 +26,6 @@ import {
   at,
   concat,
   find,
-  has,
   isEmpty,
   isNil,
   isObjectLike,
@@ -227,7 +230,10 @@ export const csvCommand = new Command('csv')
       raw: string
     }
 
-    const filterRecordTransform = transform(async (chunk: CsvDataPayload, callback) => {
+    const filterRecordTransform = transform(async (chunk: CsvDataPayload, callback: HandlerCallback<{
+      record: JsonObject
+      info: CsvDataPayload['info']
+    } | null>) => {
       const foundSkippableLine = skippableLines.find(([line]) => line === chunk.raw)
 
       if (typeof chunk === 'string' || typeof foundSkippableLine !== 'undefined') {
@@ -349,15 +355,19 @@ export const csvCommand = new Command('csv')
       }
     })
 
-    const csvFileProcessor = transform(async ({
-      record,
-      info,
-    }: CsvDataPayload, callback) => {
+    const finalProcessStream = transform(async (chunk: CsvDataPayload, callback) => {
+      const {
+        record,
+        info,
+      } = chunk
+
       fs.ensureDirSync(join(parsedOutputFile.dir, 'DATA'))
 
       const CATEGORY: 'default' | string = isEmpty(options.categoryField)
         ? `default`
-        : at(record, options.categoryField).map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v).join(' ')
+        : at(record, options.categoryField)
+          .map(v => isEmpty(v) || isNil(v) ? 'EMPTY' : v)
+          .join(' ')
 
       let baseOutputPath = parsedOutputFile.name
 
@@ -367,9 +377,11 @@ export const csvCommand = new Command('csv')
       if (isDef(options.rowFilters) && !isEmpty(options.rowFilters))
         baseOutputPath += ` FILTERED`
 
-      if (!has(fileCategoryObject, CATEGORY)) {
+      if (!(CATEGORY in fileCategoryObject)) {
+        filterRecordTransform.pause()
+
         const line = csvStringifySync([record], {
-          header: true,
+          header: options.writeHeader,
           columns,
         })
 
@@ -377,29 +389,12 @@ export const csvCommand = new Command('csv')
 
         const FILENUM = typeof options.fileSize === 'number' && options.fileSize > 0 ? 1 : undefined
 
-        let PATH = baseOutputPath
-
-        if (typeof FILENUM !== 'undefined')
-          PATH += ` ${FILENUM}`
-
-        PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(PATH, { replacement: '_' })}.csv`)
+        const PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(baseOutputPath, { replacement: '_' })}${FILENUM !== undefined ? ` ${FILENUM}` : ''}.csv`)
 
         const writeStream = createWriteStream(PATH, 'utf-8')
 
-        const fileObject = {
-          CATEGORY,
-          BYTES: lineBufferLength,
-          ROWS: 1,
-          FILENUM,
-          PATH,
-          FILTER: options.rowFilters,
-          stream: writeStream,
-        }
-
         writeStream.on('finish', async () => {
-          filterRecordTransform.pause()
-
-          const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH: baseOutputPath })!
+          const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
 
           const formattedBytes = numbro(thisFileObject.BYTES).format({
             output: 'byte',
@@ -413,16 +408,31 @@ export const csvCommand = new Command('csv')
           const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
 
           spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-          await sleep(1000)
-          filterRecordTransform.resume()
         })
-        writeStream.write(line)
+
+        const fileObject = {
+          CATEGORY,
+          BYTES: lineBufferLength,
+          ROWS: 1,
+          FILENUM,
+          PATH,
+          FILTER: options.rowFilters,
+          stream: writeStream,
+        }
+
+        if (!fileObject.stream!.write(line) && !filterRecordTransform.isPaused()) {
+          filterRecordTransform.pause()
+          fileObject.stream!.once('drain', () => {
+            filterRecordTransform.resume()
+          })
+        }
+        spinner.info(chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`))
         fileCategoryObject[CATEGORY] = [fileObject]
-        spinner.text = chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`)
         await sleep(750)
+        filterRecordTransform.resume()
       }
       else {
-        let line = csvStringifySync([record], {
+        const line = csvStringifySync([record], {
           header: false,
           columns,
         })
@@ -434,20 +444,15 @@ export const csvCommand = new Command('csv')
         const maxFileSizeBytes = typeof options.fileSize === 'number' && options.fileSize > 0 ? (options.fileSize ?? 0) * 1024 * 1024 : Infinity
 
         if (lineBufferLength + fileObject.BYTES > (maxFileSizeBytes)) {
+          filterRecordTransform.pause()
+
           const FILENUM = fileObject.FILENUM! + 1
 
-          let PATH = baseOutputPath
-
-          if (typeof FILENUM !== 'undefined')
-            PATH += ` ${FILENUM}`
-
-          PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(PATH, { replacement: '_' })}.csv`)
+          const PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(baseOutputPath, { replacement: '_' })}${FILENUM !== undefined ? ` ${FILENUM}` : ''}.csv`)
 
           const writeStream = createWriteStream(PATH, 'utf-8')
 
           writeStream.on('finish', async () => {
-            filterRecordTransform.pause()
-
             const thisFileObject = find(fileCategoryObject[CATEGORY], { PATH })!
 
             const formattedBytes = numbro(thisFileObject.BYTES).format({
@@ -461,16 +466,11 @@ export const csvCommand = new Command('csv')
 
             const formattedLineCount = numbro(thisFileObject.ROWS).format({ thousandSeparated: true })
 
-            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+            spinner.info(chalk.yellow(`FINISHED WITH "${basename(thisFileObject.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
             await sleep(750)
-            filterRecordTransform.resume()
           })
-          line = csvStringifySync([record], {
-            header: options.writeHeader,
-            columns,
-          })
-          writeStream.write(line)
-          fileCategoryObject[CATEGORY].push({
+
+          const newFileObject = {
             CATEGORY,
             BYTES: lineBufferLength,
             ROWS: 1,
@@ -478,45 +478,105 @@ export const csvCommand = new Command('csv')
             PATH,
             FILTER: options.rowFilters,
             stream: writeStream,
-          })
+          }
+
+          if (!newFileObject.stream!.write(line) && !filterRecordTransform.isPaused()) {
+            filterRecordTransform.pause()
+            newFileObject.stream!.once('drain', () => {
+              filterRecordTransform.resume()
+            })
+          }
+          fileCategoryObject[CATEGORY].push(newFileObject)
+          spinner.info(chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`))
+          filterRecordTransform.resume()
         }
         else {
           fileObject.BYTES += lineBufferLength
           fileObject.ROWS++
-          fileObject.stream!.write(line)
-          if ((info.records % 1000) === 0 && info.records > 0) {
-            const totalWrittenRecords = sumBy(flat(values(fileCategoryObject)), 'ROWS')
-
-            spinner.info(`${chalk.magentaBright(`READ ${numbro(totalParsedLines).format({ thousandSeparated: true })} LINES`)}; ${chalk.greenBright(`WROTE ${numbro(totalWrittenRecords).format({ thousandSeparated: true })} RECORDS`)}`)
+          if (!fileObject.stream!.write(line) && !filterRecordTransform.isPaused()) {
+            filterRecordTransform.pause()
+            fileObject.stream!.once('drain', () => {
+              filterRecordTransform.resume()
+            })
           }
         }
       }
+      if ((info.records % 1000) === 0 && info.records > 0) {
+        const totalWrittenRecords = sumBy(flat(values(fileCategoryObject)), 'ROWS')
+
+        spinner.info(`${chalk.magentaBright(`READ ${numbro(totalParsedLines).format({ thousandSeparated: true })} LINES`)}; ${chalk.greenBright(`WROTE ${numbro(totalWrittenRecords).format({ thousandSeparated: true })} RECORDS`)}`)
+      }
       callback()
+      // csvFileProcessor.resume()
     })
 
-    pipeline(
-      readStream,
-      csvSourceStream,
-      filterRecordTransform,
-      csvFileProcessor,
+    //   if (err)
+    //     spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
+    // })
+    // readStream.pipe(csvSourceStream).pipe(filterRecordTransform, { end: false })
+    readStream.pipe(csvSourceStream, { end: false }).pipe(filterRecordTransform, { end: false })
+    pipeline(filterRecordTransform, finalProcessStream, async (err) => {
+      if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
+        process.exit(1)
+      }
+      else {
+        const files = fileCategoryObject
 
-      async (err) => {
-        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-          spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
-          process.exit(1)
-        }
-        else {
-          const files = fileCategoryObject
+        const fileObjectArray = Object.values(files).flat()
 
-          const fileObjectArray = Object.values(files).flat()
+        await Promise.all(fileObjectArray.map(async (file) => {
+          if (isDef(file.stream) && file.stream.writableFinished !== true) {
+            if (file.stream.writableNeedDrain)
+              await once(file.stream, 'drain')
 
-          await Promise.all(fileObjectArray.map(async (file) => {
-            if (isDef(file.stream) && file.stream.writableFinished !== true) {
-              if (file.stream.writableNeedDrain)
-                await once(file.stream, 'drain')
+            await new Promise<void>(resolve => file.stream!.close(async () => {
+              const formattedBytes = numbro(file.BYTES).format({
+                output: 'byte',
+                spaceSeparated: true,
+                base: 'general',
+                average: true,
+                mantissa: 2,
+                optionalMantissa: true,
+              })
 
-              await new Promise<void>(resolve => file.stream!.close(async () => {
-                const formattedBytes = numbro(file.BYTES).format({
+              const formattedLineCount = numbro(file.ROWS).format({ thousandSeparated: true })
+
+              spinner.text = (chalk.yellow(`FINISHED WITH "${basename(file.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
+              await sleep(1000)
+              resolve()
+            }))
+          }
+
+          return true
+        }))
+
+        const table = new Table(fileObjectArray.map(o => pick(o, ['CATEGORY', 'PATH', 'ROWS', 'BYTES'])), {
+          maxWidth: 600,
+          ignoreEmptyColumns: true,
+          columns: [
+            {
+              name: 'CATEGORY',
+              get: cellValue => cellValue === undefined || cellValue === 'default' ? '' : chalk.bold(chalk.yellow(cellValue)),
+            },
+            {
+              name: 'PATH',
+              get: cellValue => chalk.cyan(join('../', relative(parse(options.filePath).dir, cellValue as string))),
+            },
+            {
+              name: 'ROWS',
+              get: cellValue => numbro(cellValue).format({ thousandSeparated: true }),
+              padding: {
+                left: 'ROWS: ',
+                right: ' ',
+              },
+            },
+            {
+              name: 'BYTES',
+              get: (cellValue) => {
+                const formattedValue = numbro(cellValue)
+
+                return formattedValue.format({
                   output: 'byte',
                   spaceSeparated: true,
                   base: 'general',
@@ -524,120 +584,79 @@ export const csvCommand = new Command('csv')
                   mantissa: 2,
                   optionalMantissa: true,
                 })
+              },
+            },
+          ],
 
-                const formattedLineCount = numbro(file.ROWS).format({ thousandSeparated: true })
+        })
 
-                spinner.text = (chalk.yellow(`FINISHED WITH "${basename(file.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-                await sleep(1000)
-                resolve()
-              }))
+        const totalRows = sumBy(fileObjectArray, 'ROWS')
+
+        const totalFiles = fileObjectArray.length
+
+        const totalBytes = sumBy(fileObjectArray, 'BYTES')
+
+        const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
+
+        const formattedTotalParsedLines = numbro(totalParsedLines).format({ thousandSeparated: true })
+
+        const formattedTotalParsedRecords = numbro(totalParsedRecords).format({ thousandSeparated: true })
+
+        const formattedTotalSkippedRecords = numbro(totalSkippedLines).format({ thousandSeparated: true })
+
+        const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
+
+        const formattedTotalBytes = numbro(totalBytes).format({
+          output: 'byte',
+          spaceSeparated: true,
+          base: 'general',
+          average: true,
+          mantissa: 2,
+          optionalMantissa: true,
+        })
+
+        const parseOutputs = fileObjectArray.map((o) => {
+          return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
+            if (k === 'CATEGORY' && !isEmpty(options.categoryField)) {
+              return `${options.categoryField.join(' + ')} = ${v}`
             }
-
-            return true
-          }))
-
-          const table = new Table(fileObjectArray.map(o => pick(o, ['CATEGORY', 'PATH', 'ROWS', 'BYTES'])), {
-            maxWidth: 600,
-            ignoreEmptyColumns: true,
-            columns: [
-              {
-                name: 'CATEGORY',
-                get: cellValue => cellValue === undefined || cellValue === 'default' ? '' : chalk.bold(chalk.yellow(cellValue)),
-              },
-              {
-                name: 'PATH',
-                get: cellValue => chalk.cyan(join('../', relative(parse(options.filePath).dir, cellValue as string))),
-              },
-              {
-                name: 'ROWS',
-                get: cellValue => numbro(cellValue).format({ thousandSeparated: true }),
-                padding: {
-                  left: 'ROWS: ',
-                  right: ' ',
-                },
-              },
-              {
-                name: 'BYTES',
-                get: (cellValue) => {
-                  const formattedValue = numbro(cellValue)
-
-                  return formattedValue.format({
-                    output: 'byte',
-                    spaceSeparated: true,
-                    base: 'general',
-                    average: true,
-                    mantissa: 2,
-                    optionalMantissa: true,
-                  })
-                },
-              },
-            ],
-
+            else {
+              return isObjectLike(v) ? !isEmpty(v) ? makeYAML(v) : undefined : v
+            }
           })
+        })
 
-          const totalRows = sumBy(fileObjectArray, 'ROWS')
+        const parseResultsCsv = Papa.unparse(parseOutputs)
 
-          const totalFiles = fileObjectArray.length
+        const summaryString = makeYAML({
+          'TOTAL LINES PARSED': formattedTotalParsedLines,
+          'TOTAL RECORDS PARSED': formattedTotalParsedRecords,
+          'TOTAL LINES SKIPPED': formattedTotalSkippedRecords,
+          'TOTAL NON-HEADER ROWS WRITTEN': formattedTotalRows,
 
-          const totalBytes = sumBy(fileObjectArray, 'BYTES')
+          'TOTAL BYTES WRITTEN': formattedTotalBytes,
+          'TOTAL FILES': numbro(totalFiles).format({ thousandSeparated: true }),
 
-          const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
+        })
 
-          const formattedTotalParsedLines = numbro(totalParsedLines).format({ thousandSeparated: true })
+        fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
+        fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
 
-          const formattedTotalParsedRecords = numbro(totalParsedRecords).format({ thousandSeparated: true })
+        let spinnerText = `SUCCESSFULLY READ ${chalk.magentaBright(formattedTotalParsedLines)} LINES AND WROTE ${chalk.green(formattedTotalRows)} LINES TO ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
 
-          const formattedTotalSkippedRecords = numbro(totalSkippedLines).format({ thousandSeparated: true })
+        if (options.writeHeader)
+          spinnerText += chalk.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
+        else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)).base}"`)}\n`)
 
-          const formattedTotalFiles = numbro(totalFiles).format({ thousandSeparated: true })
+        spinner.stopAndPersist({
+          symbol: '🚀',
+          text: `${spinnerText}\n${table.toString()}`,
+        })
+      }
+    })
 
-          const formattedTotalBytes = numbro(totalBytes).format({
-            output: 'byte',
-            spaceSeparated: true,
-            base: 'general',
-            average: true,
-            mantissa: 2,
-            optionalMantissa: true,
-          })
-
-          const parseOutputs = fileObjectArray.map((o) => {
-            return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
-              if (k === 'CATEGORY' && !isEmpty(options.categoryField)) {
-                return `${options.categoryField.join(' + ')} = ${v}`
-              }
-              else {
-                return isObjectLike(v) ? !isEmpty(v) ? makeYAML(v) : undefined : v
-              }
-            })
-          })
-
-          const parseResultsCsv = Papa.unparse(parseOutputs)
-
-          const summaryString = makeYAML({
-            'TOTAL LINES PARSED': formattedTotalParsedLines,
-            'TOTAL RECORDS PARSED': formattedTotalParsedRecords,
-            'TOTAL LINES SKIPPED': formattedTotalSkippedRecords,
-            'TOTAL NON-HEADER ROWS WRITTEN': formattedTotalRows,
-
-            'TOTAL BYTES WRITTEN': formattedTotalBytes,
-            'TOTAL FILES': numbro(totalFiles).format({ thousandSeparated: true }),
-
-          })
-
-          fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT OUTPUT FILES.csv`), parseResultsCsv)
-          fs.outputFileSync(join(parsedOutputFile.dir, `PARSE AND SPLIT SUMMARY.yaml`), summaryString)
-
-          let spinnerText = `SUCCESSFULLY READ ${chalk.magentaBright(formattedTotalParsedLines)} LINES AND WROTE ${chalk.green(formattedTotalRows)} LINES TO ${chalk.green(formattedTotalFiles)} FILES OF TOTAL SIZE ${chalk.green(formattedTotalBytes)}\n`
-
-          if (options.writeHeader)
-            spinnerText += chalk.yellow(`THE HEADER IS WRITTEN TO EACH FILE\n`)
-          else spinnerText += chalk.yellow(`THE HEADER FOR ALL FILES IS ${chalk.cyan(`"${parse(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`)).base}"`)}\n`)
-
-          spinner.stopAndPersist({
-            symbol: '🚀',
-            text: `${spinnerText}\n${table.toString()}`,
-          })
-        }
-      },
-    )
+    // pipeline(
+    //   readStream,
+    //   csvSourceStream,
+    // )
   })

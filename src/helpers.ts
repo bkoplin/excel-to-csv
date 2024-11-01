@@ -474,5 +474,5 @@ export function streamToFile(inputStream: Stringifier, filePath: string, callbac
     }
   }
 
-  return fileWriteStream
+  return pipeline
 }
