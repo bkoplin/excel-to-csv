@@ -425,7 +425,7 @@ export const csvCommand = new Command('csv')
           fileMetrics.push(workingCategoryObjects[CATEGORY])
 
         if ((lineBufferLength + workingCategoryObjects[CATEGORY].BYTES) > (maxFileSizeBytes)) {
-          workingCategoryObjects[CATEGORY].stream!.close()
+          workingCategoryObjects[CATEGORY].stream!.end()
           workingCategoryObjects[CATEGORY] = clone(omit(workingCategoryObjects[CATEGORY], ['stream']))
           workingCategoryObjects[CATEGORY].FILENUM! += 1
           workingCategoryObjects[CATEGORY].BYTES = 0
@@ -453,7 +453,7 @@ export const csvCommand = new Command('csv')
 
       const totalWrittenRecords = sumBy(fileMetrics, 'ROWS')
 
-      if ((totalWrittenRecords % 1000) === 0 && totalWrittenRecords > 0) {
+      if ((totalWrittenRecords % 10000) === 0 && totalWrittenRecords > 0) {
         spinner.info(`${chalk.magentaBright(`READ ${numbro(info.lines).format({ thousandSeparated: true })} LINES`)}; ${chalk.greenBright(`WROTE ${numbro(totalWrittenRecords).format({ thousandSeparated: true })} RECORDS`)}`)
       }
       // csvFileProcessor.resume()
@@ -471,49 +471,16 @@ export const csvCommand = new Command('csv')
           spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
           process.exit(1)
         }
-        await map(fileMetrics, async (file, i) => {
+
+        const newMetrics = await map(fileMetrics, async (file, i) => {
           if (file.stream!.writableFinished !== true) {
-            if (file.stream!.writableNeedDrain)
-              await once(file.stream!, 'drain')
-
-            fileMetrics[i] = file
-
-            return await new Promise<void>(resolve => file.stream!.close(async () => {
-              const formattedBytes = numbro(file.BYTES).format({
-                output: 'byte',
-                spaceSeparated: true,
-                base: 'general',
-                average: true,
-                mantissa: 2,
-                optionalMantissa: true,
-              })
-
-              const formattedLineCount = numbro(file.ROWS).format({ thousandSeparated: true })
-
-              spinner.text = (chalk.yellow(`FINISHED WITH "${basename(file.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-              await sleep(750)
-              resolve()
-            }))
+            await once(file.stream!, 'finish')
           }
-          else {
-            const formattedBytes = numbro(file.BYTES).format({
-              output: 'byte',
-              spaceSeparated: true,
-              base: 'general',
-              average: true,
-              mantissa: 2,
-              optionalMantissa: true,
-            })
 
-            const formattedLineCount = numbro(file.ROWS).format({ thousandSeparated: true })
-
-            spinner.text = (chalk.yellow(`FINISHED WITH "${basename(file.PATH)}"; WROTE `) + chalk.magentaBright(`${formattedBytes} BYTES, `) + chalk.greenBright(`${formattedLineCount} LINES; `))
-
-            return sleep(750)
-          }
+          return Promise.resolve(file)
         })
 
-        const table = new Table(fileMetrics.map(o => pick(o, ['CATEGORY', 'PATH', 'ROWS', 'BYTES'])), {
+        const table = new Table(newMetrics.map(o => pick(o, ['CATEGORY', 'PATH', 'ROWS', 'BYTES'])), {
           maxWidth: 600,
           ignoreEmptyColumns: true,
           columns: [
@@ -552,11 +519,11 @@ export const csvCommand = new Command('csv')
 
         })
 
-        const totalRows = sumBy(fileMetrics, 'ROWS')
+        const totalRows = sumBy(newMetrics, 'ROWS')
 
-        const totalFiles = fileMetrics.length
+        const totalFiles = newMetrics.length
 
-        const totalBytes = sumBy(fileMetrics, 'BYTES')
+        const totalBytes = sumBy(newMetrics, 'BYTES')
 
         const formattedTotalRows = numbro(totalRows).format({ thousandSeparated: true })
 
@@ -577,7 +544,7 @@ export const csvCommand = new Command('csv')
           optionalMantissa: true,
         })
 
-        const parseOutputs = fileMetrics.map((o) => {
+        const parseOutputs = newMetrics.map((o) => {
           return mapValues(shake(omit(o, ['stream', 'FILENUM']), v => isUndefined(v)), (v, k) => {
             if (k === 'CATEGORY' && !isEmpty(options.categoryField)) {
               return `${options.categoryField.join(' + ')} = ${v}`
