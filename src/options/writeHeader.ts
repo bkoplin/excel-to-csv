@@ -8,4 +8,4 @@ export default new Option(
 )
   .default(false)
   .preset(true)
-  .argParser((val: string | boolean): boolean => typeof val === 'boolean' ? val : isBoolean(val, { loose: true }) ? toBoolean(val) : false)
+  .argParser((val: string): boolean => isBoolean(val, { loose: true }) ? toBoolean(val) : false)
