@@ -1,6 +1,10 @@
 import type {
+  Callback,
   CastingContext,
+  ColumnOption,
   Info,
+  Options,
+  Parser,
 } from 'csv-parse'
 import type { HandlerCallback } from 'stream-transform'
 import type {
@@ -76,6 +80,7 @@ import escape from '../options/escape'
 import fileSizeOption from '../options/fileSize'
 import fromLine from '../options/fromLine'
 import makeFilePathOption from '../options/makeFilePath'
+import matchType from '../options/matchType'
 import quote from '../options/quote'
 import includesHeaderOption from '../options/rangeIncludesHeader'
 import rowCount from '../options/rowCount'
@@ -96,12 +101,13 @@ export const csvCommand = new Command('csv')
   .addOption(includesHeaderOption)
   .addOption(writeHeaderOption)
   .addOption(filterValuesOption)
+  .addOption(matchType)
   .addOption(categoryOption)
   .addOption(delimiter)
   .addOption(quote)
   .addOption(escape)
   .action(async function () {
-    const options = this.opts()
+    const options = this.opts() as unknown as CSVOptions
 
     const newFilePath = await checkAndResolveFilePath({
       fileType: 'CSV',
@@ -116,7 +122,7 @@ export const csvCommand = new Command('csv')
     const inputStream = createReadStream(options.filePath, 'utf8')
 
     await new Promise<void>(resolve => inputStream.on('readable', async () => {
-      spinner.succeed(chalk.greenBright(`Successfully OPENED ${basename(options.filePath)}`))
+      spinner.succeed(chalk.greenBright(`SUCCESSFULLY OPENED ${basename(options.filePath)}`))
       await sleep(750)
       resolve()
     }))
@@ -149,14 +155,6 @@ export const csvCommand = new Command('csv')
     let fields: string[] = []
 
     let columns: string[] = []
-
-    let rawHeaderLine: string
-
-    const rawPartialLine = {
-      line: 0,
-      rowArray: [] as string[],
-      row: '',
-    }
 
     const skippableLines: [string, number][] = []
 
@@ -191,7 +189,7 @@ export const csvCommand = new Command('csv')
 
     let rawSplitHeaderRow: string[]
 
-    const columnsFunction = (headerLine: string[]) => {
+    const columnsFunction = (headerLine: string[]): ColumnOption[] => {
       rawSplitHeaderRow = headerLine
 
       const headerArray = headerLine.map(v => v.trim()).map(v => isEmpty(v) || isNil(v) ? false : v).map((v, i) => get(options, 'rangeIncludesHeader', false) ? v : `Column ${i + 1}`)
@@ -200,12 +198,12 @@ export const csvCommand = new Command('csv')
       columns = concat(fields, rowMetadataColumns)
       fs.writeFileSync(join(parsedOutputFile.dir, `${parsedOutputFile.name} HEADER.csv`), csvStringifySync([columns]), 'utf8')
 
-      return formatHeaderValues(headerArray)
+      return formatHeaderValues(headerArray) as (string | false)[]
     }
 
-    const delimiterValue = get(options, 'delimiter', ',') === 'tab' ? '\t' : get(options, 'delimiter', ',')
+    const delimiterValue = get<CSVOptions['delimiter']>(options, 'delimiter', ',') === 'tab' ? '\t' : get(options, 'delimiter', ',')
 
-    const csvSourceStream = parser({
+    const csvSourceStream = (parser as unknown as (options: Options | undefined, callback?: Callback | undefined) => Parser)({
       bom: true,
       delimiter: delimiterValue,
 
@@ -303,32 +301,10 @@ export const csvCommand = new Command('csv')
           if (askAboutErrors !== false) {
             spinner.warn(`${parsingErrorMessage}\n${chalk.redBright('RAW LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}`)
 
-            const [, confirmQuit] = await tryPrompt('confirm', {
+            const [, confirmQuit] = await tryPrompt('expand', {
               message: 'Would you like to quit parsing the file?',
-              default: false,
-            })
-
-            if (confirmQuit === true) {
-              const formattedLineCount = numbro(chunk.info.lines).format({ thousandSeparated: true })
-
-              spinner.warn(chalk.cyanBright(`Quitting; consider re-running the program with the --from-line option set to ${chalk.redBright(formattedLineCount)} to set the header to line ${chalk.redBright(formattedLineCount)}`))
-              callback(chunk.info.error)
-            }
-            else if (isUndefined(askAboutErrors)) {
-              const [, confirmAboutAsking] = await tryPrompt('confirm', {
-                message: 'Would you like to be asked if you want to quit due to future parsing errors from this file?',
-                default: false,
-              })
-
-              if (confirmAboutAsking === true)
-                askAboutErrors = true
-              else askAboutErrors = false
-            }
-          }
-          if (supressErrors === false) {
-            const [, isSkippableLine] = await tryPrompt('expand', {
-              message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
-              default: 'y',
+              default: 'n',
+              expanded: true,
               choices: [{
                 name: 'yes',
                 value: true,
@@ -338,18 +314,58 @@ export const csvCommand = new Command('csv')
                 value: false,
                 key: 'n',
               }, {
-                name: 'supress future errors',
+                name: 'no and don\'t ask if I want to quit again',
                 value: 'supress',
                 key: 's',
               }],
             })
 
-            if (isSkippableLine === true) {
+            if (confirmQuit === true) {
+              const formattedLineCount = numbro(chunk.info.lines).format({ thousandSeparated: true })
+
+              spinner.warn(chalk.cyanBright(`Quitting; consider re-running the program with the --from-line option set to ${chalk.redBright(formattedLineCount)} to set the header to line ${chalk.redBright(formattedLineCount)}`))
+              callback(chunk.info.error)
+            }
+            else if (isUndefined(askAboutErrors)) {
+              if (confirmQuit === 'supress')
+                askAboutErrors = false
+              else askAboutErrors = true
+            }
+          }
+          if (supressErrors === false) {
+            const [, isSkippableLine] = await tryPrompt('expand', {
+              message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
+              default: 'y',
+              expanded: true,
+              choices: [{
+                name: 'yes',
+                value: true,
+                key: 'y',
+              }, {
+                name: 'no',
+                value: false,
+                key: 'n',
+              }, {
+                name: 'yes and don\'t ask about any more line errors',
+                value: 'supress-yes',
+                key: 'x',
+              }, {
+                name: 'no and don\'t ask about any more line errors',
+                value: 'supress-no',
+                key: 's',
+              }],
+            })
+
+            if (isSkippableLine === true || isSkippableLine === 'supress-yes') {
               skippableLines.push([chunk.raw, chunk.info.lines])
               spinner.info(chalk.cyanBright(`SKIPPING LINE ${chalk.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} AND FUTURE EQUIVALENT LINES`))
+
+              if (isSkippableLine === 'supress-yes')
+                supressErrors = true
+
               await sleep(500)
             }
-            else if (isSkippableLine === 'supress') {
+            else if (isSkippableLine === 'supress-no') {
               supressErrors = true
 
               const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
@@ -513,16 +529,11 @@ export const csvCommand = new Command('csv')
       if ((totalWrittenRecords % 10000) === 0 && totalWrittenRecords > 0) {
         spinner.info(`${chalk.magentaBright(`READ ${numbro(info.lines).format({ thousandSeparated: true })} LINES`)}; ${chalk.greenBright(`WROTE ${numbro(totalWrittenRecords).format({ thousandSeparated: true })} RECORDS`)}`)
       }
-      // csvFileProcessor.resume()
     })
-    //   if (err)
-    //     spinner.fail(chalk.redBright(`Error parsing and splitting ${filename(options.filePath)}, ${err.message}`))
-    // })
-    // readStream.pipe(csvSourceStream).pipe(filterRecordTransform, { end: false })
     filterRecordTransform.on('end', async () => {
       for (const file of fileMetrics) {
         if (file.stream!.writableNeedDrain === true) {
-          await new Promise<void>((resolve, reject) => {
+          await new Promise<void>((resolve) => {
             file.stream!.once('drain', () => {
               file.stream?.close()
               resolve()
@@ -644,11 +655,6 @@ export const csvCommand = new Command('csv')
       },
     )
     csvSourceStream.pipe(filterRecordTransform)
-
-    // pipeline(
-    //   readStream,
-    //   csvSourceStream,
-    // )
   })
 
 function getMaxFileSize(options: CSVOptions): number | PositiveInfinity {

@@ -1,10 +1,11 @@
 import type { WriteStream } from 'node:fs'
-import type { ParsedPath } from 'pathe'
+import type { ParsedPath } from 'node:path'
 import type {
+  IfNever,
   JsonPrimitive,
   Simplify,
+  UnionToIntersection,
 } from 'type-fest'
-import type { program } from '.'
 import type { csvCommand } from './subcommands/csvCommand'
 import type { excelCommamd } from './subcommands/excelCommand'
 
@@ -22,17 +23,16 @@ type CsvCommand = typeof csvCommand
 
 type ExcelCommand = typeof excelCommamd
 
-type ProgramCommand = typeof program
-
-type CSVCommandOpts = ReturnType<CsvCommand['opts']>
-
 export type CSVOptions =
-  { [Prop in keyof CSVCommandOpts as `${Prop}`]: {
-    1: Exclude<CSVCommandOpts[Prop], boolean>
-    0: CSVCommandOpts[Prop]
-  }[CSVCommandOpts[Prop] extends string | number ? 1 : 0] }
+  { [Prop in keyof ReturnType<CsvCommand['opts']> as `${Prop}`]: {
+    1: IfNever<Exclude<ReturnType<CsvCommand['opts']>[Prop], boolean>, boolean, Exclude<ReturnType<CsvCommand['opts']>[Prop], boolean>>
+    0: ReturnType<CsvCommand['opts']>[Prop]
+  }[UnionToIntersection<ReturnType<CsvCommand['opts']>[Prop]> extends boolean ? 1 : 0] }
 
-export type ExcelOptions = ReturnType<ExcelCommand['opts']>
+export type ExcelOptions = { [Prop in keyof ReturnType<ExcelCommand['opts']> as `${Prop}`]: {
+  1: IfNever<Exclude<ReturnType<ExcelCommand['opts']>[Prop], boolean>, boolean, Exclude<ReturnType<ExcelCommand['opts']>[Prop], boolean>>
+  0: ReturnType<ExcelCommand['opts']>[Prop]
+}[UnionToIntersection<ReturnType<ExcelCommand['opts']>[Prop]> extends true ? 1 : 0] }
 
 export type CSVOptionsWithGlobals = Simplify<CSVOptions & {
   skippedLines: number

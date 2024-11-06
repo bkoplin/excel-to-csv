@@ -1,22 +1,32 @@
 import type { Command } from '@commander-js/extra-typings'
 import type { Stringifier } from 'csv-stringify'
 import type { ParsedPath } from 'node:path'
-import type { Readable } from 'node:stream'
+import type {
+  Readable,
+  Stream,
+} from 'node:stream'
 import type {
   AsyncReturnType,
   ConditionalPick,
   EmptyObject,
+  Get,
+  IfUnknown,
   JsonPrimitive,
   KeysOfUnion,
   StringKeyOf,
 } from 'type-fest'
 import type {
   CombinedProgramOptions,
+  CSVOptions,
+  ExcelOptions,
   FileMetrics,
 } from './types'
 import { readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { objectEntries } from '@antfu/utils'
+import {
+  isDef,
+  objectEntries,
+} from '@antfu/utils'
 import { Separator } from '@inquirer/core'
 import { select } from '@inquirer/prompts'
 import * as Prompts from '@inquirer/prompts'
@@ -29,11 +39,10 @@ import inquirerFileSelector from 'inquirer-file-selector'
 import {
   findIndex,
   has,
-  isArray,
   isEmpty,
   isNil,
   isNull,
-  isObject,
+
   padStart,
 } from 'lodash-es'
 import {
@@ -54,6 +63,9 @@ import {
 } from 'pathe'
 import {
   get,
+  isArray,
+  isFunction,
+  isObject,
   objectify,
   omit,
   shake,
@@ -224,7 +236,7 @@ export function generateParsedCsvFilePath({
 
   return parsedOutputFile
 }
-export function generateCommandLineString(combinedOptions: Partial<CombinedProgramOptions>, command: Command & { _name?: string }): string {
+export function generateCommandLineString(combinedOptions: CSVOptions & ExcelOptions, command: Command & { _name?: string }): string {
   return objectEntries(combinedOptions).reduce((acc, [key, value]) => {
     const optionFlags = objectify([...command.options, ...(command.parent?.options ?? [])], o => o.attributeName() as KeysOfUnion<CombinedProgramOptions>, o => o.long as string)
 
@@ -305,7 +317,7 @@ export function createCsvFileName(options: {
 }, fileNumber: number | undefined): string {
   let csvFileName = options.parsedOutputFile.name
 
-  if (typeof category !== 'undefined' && options.category !== null)
+  if (typeof options.category !== 'undefined' && options.category !== null)
     csvFileName += ` ${options.category}`
 
   if (typeof fileNumber !== 'undefined')
@@ -315,7 +327,7 @@ export function createCsvFileName(options: {
 }
 export function createHeaderFile(options: {
   parsedOutputFile: Omit<ParsedPath, 'base'>
-  fields: string[]
+  fields: (string | boolean)[]
   parsedLines: number
 }, results: Papa.ParseStepResult<JsonPrimitive[]>): void {
   const headerFile = fs.createWriteStream(join(options.parsedOutputFile.dir, `${options.parsedOutputFile.name} HEADER.csv`), 'utf-8')
@@ -335,14 +347,12 @@ type PromptsType = ConditionalPick<typeof Prompts, (...args: any[]) => any>
 
 type PromptKeys = StringKeyOf<PromptsType>
 
-export async function tryPrompt<T extends PromptKeys, N extends number>(type: T, config: Parameters<PromptsType[T]>[0], timeout?: N): N extends undefined ? Promise<[undefined, AsyncReturnType<PromptsType[T]>]> : Promise<[Error, undefined] | [undefined, AsyncReturnType<PromptsType[T]>]> {
-  return tryit(() => {
-    if (typeof timeout === 'undefined') {
-      return Prompts[type](config)
-    }
+export async function tryPrompt<R, T extends PromptKeys, N extends number>(type: T, config: IfUnknown<Get<PromptsType, T>, EmptyObject, Parameters<Get<PromptsType, T>>[0]>, timeout?: N): Promise<[Error, undefined] | [undefined, AsyncReturnType<Get<PromptsType, T>> | R]> {
+  if (typeof timeout === 'undefined') {
+    return tryit(() => Prompts[type](config) as Awaited<AsyncReturnType<Get<PromptsType, T>> | R>)()
+  }
 
-    return Prompts[type](config, { signal: AbortSignal.timeout(timeout) })
-  })()
+  return tryit(() => Prompts[type](config, { signal: AbortSignal.timeout(timeout) }) as Awaited<AsyncReturnType<Get<PromptsType, T>> | R>)()
 }
 export async function selectGroupingField(groupingOptions: (string | Prompts.Separator)[]): Promise<string | undefined> {
   const [, confirmCategory] = await tryit(Prompts.confirm)({
@@ -364,7 +374,7 @@ export async function selectGroupingField(groupingOptions: (string | Prompts.Sep
     }
   }
 }
-export function applyFilters<T>(options: {
+export function applyFilters<T extends Array<JsonPrimitive> | Record<string, JsonPrimitive>>(options: {
   matchType: 'any' | 'all' | 'none'
   rowFilters: EmptyObject | Record<string, (RegExp | JsonPrimitive)[]>
 }): (record: Array<JsonPrimitive> | Record<string, JsonPrimitive>) => record is T {
@@ -460,19 +470,46 @@ export function streamToFile(inputStream: Stringifier, filePath: string, callbac
 }): fs.WriteStream {
   const fileWriteStream = fs.createWriteStream(filePath, 'utf-8')
 
+  if (isPiping(inputStream))
+    inputStream.unpipe()
+
   const pipeline = inputStream
     .pipe(fileWriteStream)
 
   if ('on' in callbacks) {
-    for (const event in callbacks.on) {
-      pipeline.on(event, callbacks.on[event])
+    const theseCallbacks = callbacks.on
+
+    if (isDef(theseCallbacks)) {
+      let event: StringKeyOf<Listeners>
+
+      for (event in theseCallbacks) {
+        const cb = theseCallbacks[event]
+
+        if (isFunction(cb))
+          pipeline.on(event, cb)
+      }
     }
   }
   if ('once' in callbacks) {
-    for (const event in callbacks.once) {
-      pipeline.on(event, callbacks.once[event])
+    const theseCallbacks = callbacks.once
+
+    if (isDef(theseCallbacks)) {
+      let event: StringKeyOf<Listeners>
+
+      for (event in theseCallbacks) {
+        const cb = theseCallbacks[event]
+
+        if (isFunction(cb))
+          pipeline.once(event, cb)
+      }
     }
   }
 
   return pipeline
+}
+function isPiping<T extends Stream>(stream: T): boolean {
+  if ('_readableState' in stream && 'pipes' in (stream._readableState as { pipes: any[] }))
+    return get(stream, '_readableState.pipes.length', 0) > 0
+
+  return stream.listeners('pipe').length > 0
 }
