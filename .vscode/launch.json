@@ -8,13 +8,25 @@
     {
       "type": "node",
       "request": "launch",
-      "name": "Launch Program",
+      "name": "Launch CSV",
       "skipFiles": [
         "<node_internals>/**"
       ],
-      "program": "${file}",
+      "program": "./src/index.ts",
       "runtimeExecutable": "esno",
-      "args": []
+      "console": "integratedTerminal",
+      "args": [
+        "csv",
+        "--file-path",
+        "/Users/benkoplin/Desktop/KNA1.txt",
+        "--delimiter",
+        "|",
+        "--from-line",
+        "7",
+        "-w",
+        "--file-size",
+        "1"
+      ]
     }
   ]
 }
