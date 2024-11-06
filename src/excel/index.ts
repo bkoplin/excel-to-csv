@@ -1,4 +1,4 @@
-import type { Primitive } from 'type-fest'
+import type { JsonPrimitive } from 'type-fest'
 import { readFile } from 'node:fs/promises'
 import {
   confirm,
@@ -10,29 +10,34 @@ import {
 import chalk from 'chalk'
 import {
   isNil,
+  isNull,
+  isString,
   isUndefined,
   range,
 } from 'lodash-es'
-import ora from 'ora'
+import ora, { oraPromise } from 'ora'
+import { basename } from 'pathe'
 import { inRange } from 'radash'
 import XLSX from 'xlsx'
 
-export async function getWorkbook(inputPath: string): Promise<{
+export function getWorkbook(inputPath: string): Promise<{
   wb: XLSX.WorkBook
   bytesRead: number
 
 }> {
-  const buffer = await readFile(inputPath)
+  return oraPromise(async () => {
+    const buffer = await readFile(inputPath)
 
-  return {
-    wb: XLSX.read(buffer, {
-      type: 'buffer',
-      cellDates: true,
-      raw: true,
-      dense: true,
-    }),
-    bytesRead: buffer.length,
-  }
+    return {
+      wb: XLSX.read(buffer, {
+        type: 'buffer',
+        cellDates: true,
+        raw: true,
+        dense: true,
+      }),
+      bytesRead: buffer.length,
+    }
+  }, `${chalk.magentaBright('Reading file')} ${chalk.cyanBright(basename(inputPath))}`)
 }
 export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined): range is string {
   const sheetRange = ws?.['!ref']
@@ -64,37 +69,52 @@ export function isOverlappingRange(ws: XLSX.WorkSheet, range: string | undefined
       return false
     }
     else {
-      const warningStrings = []
-
-      for (const termType of [['s', 'starts'], ['e', 'ends']] as const) {
-        for (const objType of [['r', 'row', 'encode_row'], ['c', 'column', 'encode_col']] as const) {
-          const inputVal = decodedInputRange[termType[0]][objType[0]]
-
-          const sheetVal = decodedSheetRange[termType[0]][objType[0]]
-
-          const encodedInputVal = XLSX.utils[objType[2]](inputVal)
-
-          const diffType = inputVal < sheetVal ? 'before' : 'after'
-
-          if (inputVal !== sheetVal) {
-            warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.magentaBright(encodedInputVal)}, which is ${chalk.magentaBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
-          }
-        }
-      }
-
-      if (warningStrings.length)
-        ora(chalk.bold.yellowBright(`You have input a range (${chalk.magentaBright(range)}) that includes less data than the worksheet data range (${`${chalk.magentaBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
+      compareAndLogRanges(decodedInputRange, decodedSheetRange, range, sheetRange)
 
       return true
     }
   }
 }
+export function compareAndLogRanges(decodedInputRange: XLSX.Range, decodedSheetRange: XLSX.Range, range: string, sheetRange: string) {
+  const warningStrings = []
+
+  for (const termType of [['s', 'starts'], ['e', 'ends']] as const) {
+    for (const objType of [['r', 'row', 'encode_row'], ['c', 'column', 'encode_col']] as const) {
+      const inputVal = decodedInputRange[termType[0]][objType[0]]
+
+      const sheetVal = decodedSheetRange[termType[0]][objType[0]]
+
+      const encodedInputVal = XLSX.utils[objType[2]](inputVal)
+
+      const diffType = inputVal < sheetVal ? 'before' : 'after'
+
+      if (inputVal !== sheetVal) {
+        warningStrings.push(`\n  ${termType[1]} at ${objType[1]} ${chalk.magentaBright(encodedInputVal)}, which is ${chalk.magentaBright(Math.abs(inputVal - sheetVal))} ${objType[1]}(s) ${diffType} the worksheet data range ${termType[1]}`)
+      }
+    }
+  }
+
+  if (warningStrings.length)
+    ora(chalk.bold.yellowBright(`You have input a range (${chalk.magentaBright(range)}) that includes less data than the worksheet data range (${`${chalk.magentaBright(sheetRange)}`}).\nYour input range:${warningStrings.join('')}\n`)).warn()
+}
 export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange?: string): Promise<string> {
   const {
-    worksheetRange,
     isRangeInDefaultRange,
+    // isColumnInRange,
     parsedRange,
-  } = extractRangeInfo(wb.Sheets[sheetName], _inputRange)
+    rangeWithoutNulls,
+    firstRowWithoutNulls,
+  } = extractRangeInfo(wb.Sheets[sheetName], _inputRange ?? wb.Sheets[sheetName]['!ref']!)
+
+  // let firstRowWithoutNulls = parsedRange.s.r
+
+  // while (firstRowWithoutNulls <= parsedRange.e.r && !wb.Sheets[sheetName]?.['!data']?.[firstRowWithoutNulls].some((cell, i) => isColumnInRange(i) && isNil(cell?.v))) {
+  //   firstRowWithoutNulls++
+  // }
+
+  // if (firstRowWithoutNulls > parsedRange.e.r)
+  //   firstRowWithoutNulls = parsedRange.s.r
+  // // findIndex(wb.Sheets[sheetName]?.['!data'], (row, i) => row.some(cell => !isNil(cell?.v)))
 
   const rangeType = await expand({
     message: 'How do you want to specify the range of the worksheet to parse?',
@@ -117,7 +137,7 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
   if (rangeType === 'Excel Format') {
     return input({
       message: 'Enter the range of the worksheet to parse',
-      default: _inputRange ?? worksheetRange,
+      default: rangeWithoutNulls,
       validate: (value: string) => {
         const isValidInput = isRangeInDefaultRange(XLSX.utils.decode_range(value))
 
@@ -131,7 +151,7 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
   else {
     const startRow = await number({
       message: 'Enter the starting row number',
-      default: parsedRange.s.r + 1,
+      default: firstRowWithoutNulls + 1,
       min: parsedRange.s.r + 1,
       max: parsedRange.e.r + 1,
       step: 1,
@@ -183,29 +203,45 @@ export async function setRange(wb: XLSX.WorkBook, sheetName: string, _inputRange
     return `${startCol}${startRow}:${endCol}${endRow}`
   }
 }
-export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string | undefined): {
-  worksheetRange: string
-  isRangeInDefaultRange: (r: XLSX.Range) => boolean
-  parsedRange: XLSX.Range
-  isRowInRange: (input: number) => boolean
-  isColumnInRange: (input: number) => boolean
-} {
+export function extractRangeInfo(ws: XLSX.WorkSheet, _inputRange: string) {
   const worksheetRange = ws['!ref']!
 
-  const parsedRange = XLSX.utils.decode_range(_inputRange ?? worksheetRange)
+  const parsedRange = XLSX.utils.decode_range(_inputRange)
 
-  const isRowInRange = (input: number): boolean => inRange(input, parsedRange.s.r, parsedRange.e.r + 1)
+  const parsedWorksheetRange = XLSX.utils.decode_range(worksheetRange)
 
-  const isColumnInRange = (input: number): boolean => inRange(input, parsedRange.s.c, parsedRange.e.c + 1)
+  const isRowInRange = (input: number): boolean => inRange(input, parsedWorksheetRange.s.r, parsedWorksheetRange.e.r + 1)
+
+  const isColumnInRange = (input: number): boolean => inRange(input, parsedWorksheetRange.s.c, parsedWorksheetRange.e.c + 1)
 
   const isRangeInDefaultRange = (r: XLSX.Range): boolean => isRowInRange(r.s.r) && isColumnInRange(r.s.c) && isRowInRange(r.e.r) && isColumnInRange(r.e.c)
 
+  const hasAllColumns = (input: any[] | undefined): boolean => typeof input === 'undefined' || (parsedWorksheetRange.e.c - parsedWorksheetRange.s.c + 1) === input.length
+
+  let firstRowWithoutNulls = parsedWorksheetRange.s.r
+
+  while (firstRowWithoutNulls <= parsedWorksheetRange.e.r && (!hasAllColumns(ws?.['!data']?.[firstRowWithoutNulls]) || !ws?.['!data']?.[firstRowWithoutNulls].every(cell => !isNull(cell?.v)))) {
+    firstRowWithoutNulls++
+  }
+
+  if (firstRowWithoutNulls > parsedWorksheetRange.e.r)
+    firstRowWithoutNulls = parsedWorksheetRange.s.r
+
   return {
     worksheetRange,
+    firstRowWithoutNulls,
     isRangeInDefaultRange,
     parsedRange,
     isRowInRange,
     isColumnInRange,
+    parsedWorksheetRange,
+    rangeWithoutNulls: XLSX.utils.encode_range({
+      s: {
+        r: firstRowWithoutNulls,
+        c: parsedRange.s.c,
+      },
+      e: parsedRange.e,
+    }),
   }
 }
 export async function setSheetName(wb: XLSX.WorkBook, sheetName?: string): Promise<string> {
@@ -225,38 +261,29 @@ export async function setRangeIncludesHeader(_inputRange: string, defaultAnswer?
     default: defaultAnswer,
   })
 }
-export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): (Primitive | Date)[][] {
-  const data: (Primitive | Date)[][] = []
+export function extractDataFromWorksheet(parsedRange: XLSX.Range, ws: XLSX.WorkSheet): Array<(JsonPrimitive | Date)[]> {
+  const data = []
 
   const rowIndices = range(parsedRange.s.r, parsedRange.e.r + 1)
 
   const colIndices = range(parsedRange.s.c, parsedRange.e.c + 1)
 
   for (const rowIndex of rowIndices) {
-    const row: (Primitive | Date)[] = []
+    const row: Array<JsonPrimitive | Date> = []
 
     for (const colIndex of colIndices) {
       const cell = ws?.['!data']?.[rowIndex]?.[colIndex]
 
-      if (isUndefined(cell)) {
-        row.push('')
+      if (isUndefined(cell) || isUndefined(cell.v)) {
+        row.push(null)
       }
       else {
-        const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : cell.v
+        const cellValue = cell.t === 'd' && !isNil(cell.v) ? (cell.v as Date).toISOString() : isString(cell.v) ? cell.v.trim() : cell.v
 
-        // if (/\r|\n/.test(`${cellValue}`))
-        //   row.push(JSON.stringify(cellValue))
-        // else
         row.push(cellValue)
       }
     }
-    // if (row.some(v => /1404 {2}Rockville Pike/.test(`${v}`))) {
-    //   console.log(row)
-    // }
     data.push(row)
-    // if (rowIndex === 13 || rowIndex === 14) {
-    //   console.log(row)
-    // }
   }
 
   return data
