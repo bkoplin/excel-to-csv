@@ -1,3 +1,7 @@
+import type {
+  CastingContext,
+  Info,
+} from 'csv-parse'
 import type { WriteStream } from 'node:fs'
 import type { ParsedPath } from 'node:path'
 import type {
@@ -22,6 +26,12 @@ export interface FileMetrics {
 type CsvCommand = typeof csvCommand
 
 type ExcelCommand = typeof excelCommamd
+
+export interface CsvDataPayload {
+  record: Record<string, JsonPrimitive>
+  info: Info & CastingContext
+  raw: string
+}
 
 export type CSVOptions =
   { [Prop in keyof ReturnType<CsvCommand['opts']> as `${Prop}`]: {

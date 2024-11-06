@@ -1,5 +1,4 @@
 import type { Command } from '@commander-js/extra-typings'
-import type { Stringifier } from 'csv-stringify'
 import type { ParsedPath } from 'node:path'
 import type {
   Readable,
@@ -464,14 +463,16 @@ interface Listeners {
   unpipe?: (src: Readable) => void
 }
 
-export function streamToFile(inputStream: Stringifier, filePath: string, callbacks: {
+export async function streamToFile(inputStream: Readable, filePath: string, callbacks: {
   on?: Listeners
   once?: Listeners
-} = {}): fs.WriteStream {
+} = {}): Promise<fs.WriteStream> {
   const fileWriteStream = fs.createWriteStream(filePath, 'utf-8')
 
-  if (isPiping(inputStream))
+  if (isPiping(inputStream)) {
     inputStream.unpipe()
+    await waitForUnpipe(inputStream)
+  }
 
   const pipeline = inputStream
     .pipe(fileWriteStream)
@@ -512,4 +513,12 @@ function isPiping<T extends Stream>(stream: T): boolean {
     return get(stream, '_readableState.pipes.length', 0) > 0
 
   return stream.listeners('pipe').length > 0
+}
+// Function to wait for unpipe event
+function waitForUnpipe(stream: Readable) {
+  return new Promise<void>((resolve) => {
+    stream.once('unpipe', () => {
+      resolve()
+    })
+  })
 }

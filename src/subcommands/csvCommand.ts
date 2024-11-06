@@ -1,8 +1,6 @@
 import type {
   Callback,
-  CastingContext,
   ColumnOption,
-  Info,
   Options,
   Parser,
 } from 'csv-parse'
@@ -10,19 +8,24 @@ import type { HandlerCallback } from 'stream-transform'
 import type {
   JsonObject,
   JsonPrimitive,
+  Merge,
   PositiveInfinity,
 } from 'type-fest'
 import type {
   CSVOptions,
   FileMetrics,
 } from '../types'
+import type { CsvDataPayload } from './../types'
 import { once } from 'node:events'
 import {
   createReadStream,
   createWriteStream,
 } from 'node:fs'
 import { pipeline } from 'node:stream'
-import { isDef } from '@antfu/utils'
+import {
+  isDef,
+  isNull,
+} from '@antfu/utils'
 import { Command } from '@commander-js/extra-typings'
 import { Separator } from '@inquirer/core'
 import chalk from 'chalk'
@@ -230,12 +233,6 @@ export const csvCommand = new Command('csv')
       },
     })
 
-    interface CsvDataPayload {
-      record: Record<string, JsonPrimitive>
-      info: Info & CastingContext
-      raw: string
-    }
-
     const filterRecordTransform = transform(async (chunk: CsvDataPayload, callback: HandlerCallback<{
       record: JsonObject
       info: CsvDataPayload['info']
@@ -332,7 +329,7 @@ export const csvCommand = new Command('csv')
           }
           if (supressErrors === false) {
             const [, isSkippableLine] = await tryPrompt('expand', {
-              message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\nLINE: ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
+              message: `Is line ${chalk.redBright(chunk.info.lines)} skippable?\n\t${chalk.redBright('LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}\n`,
               default: 'y',
               expanded: true,
               choices: [{
@@ -366,65 +363,35 @@ export const csvCommand = new Command('csv')
             else if (isSkippableLine === 'supress-no') {
               supressErrors = true
 
-              const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
+              let parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v) as null | Merge<{ [index: string]: JsonPrimitive }, {
+                record: JsonObject
+                info: CsvDataPayload['info']
+              }>
 
-              if (applyFilters(options)(parsedRecord)) {
-                callback(null, {
-                  record: {
-                    ...parsedRecord,
-                    ...{
-                      source_file: basename(options.filePath),
-                      line: chunk.info.lines,
-                    },
-                  },
-                  info: chunk.info,
-                })
-              }
-              else {
-                callback(null, null)
-              }
+              parsedRecord = transformParsedRecord(parsedRecord, options, chunk)
+              callback(null, parsedRecord)
             }
           }
           else {
-            const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
+            let parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v) as null | Merge<{ [index: string]: JsonPrimitive }, {
+              record: JsonObject
+              info: CsvDataPayload['info']
+            }>
 
-            if (applyFilters(options)(parsedRecord)) {
-              callback(null, {
-                record: {
-                  ...parsedRecord,
-                  ...{
-                    source_file: basename(options.filePath),
-                    line: chunk.info.lines,
-                  },
-                },
-                info: chunk.info,
-              })
-            }
-            else {
-              callback(null, null)
-            }
+            parsedRecord = transformParsedRecord(parsedRecord, options, chunk)
+            callback(null, parsedRecord)
           }
           csvSourceStream.resume()
         }
 
         else {
-          const parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v)
+          let parsedRecord = mapValues(chunk.record, v => isString(v) ? v.trim() : v) as null | Merge<{ [index: string]: JsonPrimitive }, {
+            record: JsonObject
+            info: CsvDataPayload['info']
+          }>
 
-          if (applyFilters(options)(parsedRecord)) {
-            callback(null, {
-              record: {
-                ...parsedRecord,
-                ...{
-                  source_file: basename(options.filePath),
-                  line: chunk.info.lines,
-                },
-              },
-              info: chunk.info,
-            })
-          }
-          else {
-            callback(null, null)
-          }
+          parsedRecord = transformParsedRecord(parsedRecord, options, chunk)
+          callback(null, parsedRecord)
         }
       }
     })
@@ -661,6 +628,29 @@ export const csvCommand = new Command('csv')
     csvSourceStream.pipe(filterRecordTransform)
   })
 
+function transformParsedRecord(parsedRecord: null | Merge<{ [index: string]: JsonPrimitive }, {
+  record: JsonObject
+  info: CsvDataPayload['info']
+}>, options: CSVOptions, chunk: CsvDataPayload): null | Merge<{ [index: string]: JsonPrimitive }, {
+  record: JsonObject
+  info: CsvDataPayload['info']
+}> {
+  if (!isNull(parsedRecord) && applyFilters(options)(parsedRecord as { [index: string]: JsonPrimitive })) {
+    parsedRecord.record = {
+      ...(parsedRecord as { [index: string]: JsonPrimitive }),
+      ...{
+        source_file: basename(options.filePath),
+        line: chunk.info.lines,
+      },
+    }
+    parsedRecord.info = chunk.info
+  }
+  else {
+    parsedRecord = null
+  }
+
+  return parsedRecord
+}
 function getMaxFileSize(options: CSVOptions): number | PositiveInfinity {
   const { fileSize } = options
 
