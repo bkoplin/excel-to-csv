@@ -467,7 +467,7 @@ interface Listeners {
 export function streamToFile(inputStream: Stringifier, filePath: string, callbacks: {
   on?: Listeners
   once?: Listeners
-}): fs.WriteStream {
+} = {}): fs.WriteStream {
   const fileWriteStream = fs.createWriteStream(filePath, 'utf-8')
 
   if (isPiping(inputStream))

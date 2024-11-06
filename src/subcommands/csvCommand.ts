@@ -168,7 +168,7 @@ export const csvCommand = new Command('csv')
 
     let totalSkippedLines = get(options, 'fromLine', 0)
 
-    let askAboutErrors: boolean
+    let askToQuit: boolean
 
     const rowCountValue = get(options, 'rowCount', null)
 
@@ -298,7 +298,7 @@ export const csvCommand = new Command('csv')
 
           const parsingErrorMessage = `Error parsing line ${chalk.bold.redBright(numbro(chunk.info.lines).format({ thousandSeparated: true }))} of ${chalk.bold.redBright(basename(options.filePath))}: ${chalk.italic.redBright(errorMessage)}`
 
-          if (askAboutErrors !== false) {
+          if (askToQuit !== false) {
             spinner.warn(`${parsingErrorMessage}\n${chalk.redBright('RAW LINE:')} ${chalk.yellowBright(JSON.stringify(chunk.raw))}`)
 
             const [, confirmQuit] = await tryPrompt('expand', {
@@ -326,10 +326,8 @@ export const csvCommand = new Command('csv')
               spinner.warn(chalk.cyanBright(`Quitting; consider re-running the program with the --from-line option set to ${chalk.redBright(formattedLineCount)} to set the header to line ${chalk.redBright(formattedLineCount)}`))
               callback(chunk.info.error)
             }
-            else if (isUndefined(askAboutErrors)) {
-              if (confirmQuit === 'supress')
-                askAboutErrors = false
-              else askAboutErrors = true
+            else if (confirmQuit === 'supress') {
+              askToQuit = false
             }
           }
           if (supressErrors === false) {
@@ -484,7 +482,10 @@ export const csvCommand = new Command('csv')
           filterRecordTransform.resume()
         }
         fileMetrics.push(workingCategoryObjects[CATEGORY])
-        spinner.info(chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`))
+
+        if (CATEGORY === 'default')
+          spinner.info(chalk.yellowBright(`CREATED "${basename(PATH)}"`))
+        else spinner.info(chalk.yellowBright(`CREATED "${basename(PATH)}" FOR CATEGORY "${CATEGORY}"`))
       }
       else {
         const line = csvStringifySync([record], {
@@ -505,7 +506,10 @@ export const csvCommand = new Command('csv')
           workingCategoryObjects[CATEGORY].ROWS = 0
           workingCategoryObjects[CATEGORY].PATH = join(parsedOutputFile.dir, 'DATA', `${filenamify(baseOutputPath, { replacement: '_' })} ${workingCategoryObjects[CATEGORY].FILENUM}.csv`)
           workingCategoryObjects[CATEGORY].stream = createWriteStream(workingCategoryObjects[CATEGORY].PATH, 'utf-8')
-          spinner.info(chalk.yellowBright(`CREATED "${basename(workingCategoryObjects[CATEGORY].PATH)}" FOR CATEGORY "${CATEGORY}"`))
+
+          if (CATEGORY === 'default')
+            spinner.info(chalk.yellowBright(`CREATED "${basename(workingCategoryObjects[CATEGORY].PATH)}"`))
+          else spinner.info(chalk.yellowBright(`CREATED "${basename(workingCategoryObjects[CATEGORY].PATH)}" FOR CATEGORY "${CATEGORY}"`))
         }
         if (!workingCategoryObjects[CATEGORY].stream!.write(line)) {
           filterRecordTransform.pause()
