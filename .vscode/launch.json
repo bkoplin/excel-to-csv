@@ -4,15 +4,29 @@
   // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
   "version": "0.2.0",
   "configurations": [
+
     {
       "type": "node",
       "request": "launch",
-      "name": "Launch Program",
+      "name": "Launch CSV",
       "skipFiles": [
         "<node_internals>/**"
       ],
-      "program": "${workspaceFolder}/src/cli.ts",
-      "runtimeExecutable": "esno"
+      "program": "./src/index.ts",
+      "runtimeExecutable": "esno",
+      "console": "integratedTerminal",
+      "args": [
+        "csv",
+        "--file-path",
+        "/Users/benkoplin/Desktop/KNA1.txt",
+        "--delimiter",
+        "|",
+        "--from-line",
+        "7",
+        "-w",
+        "--file-size",
+        "1"
+      ]
     }
   ]
 }

@@ -22,6 +22,8 @@ export default antfu(
         max: 1,
         maxEOF: 0,
       }],
+      'style/dot-location': ['error', 'property'],
+      'style/multiline-ternary': ['error', 'always-multiline'],
       'style/padding-line-between-statements': ['error', {
         blankLine: 'always',
         prev: '*',
